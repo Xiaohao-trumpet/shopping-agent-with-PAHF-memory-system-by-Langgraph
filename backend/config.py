@@ -81,13 +81,24 @@ class AppConfig:
     TOOLS_ENABLED: bool = os.getenv("TOOLS_ENABLED", "true").lower() == "true"
     TOOLS_ALLOWLIST: list = os.getenv(
         "TOOLS_ALLOWLIST",
-        "kb_search,create_ticket,get_ticket,list_tickets",
+        "kb_search,create_ticket,get_ticket,list_tickets,"
+        "product_search,get_product_detail,check_inventory,get_order,list_orders,"
+        "track_shipment,recommend_products,list_coupons,apply_coupon,initiate_return",
     ).split(",")
     TOOL_MAX_CALLS_PER_TURN: int = int(os.getenv("TOOL_MAX_CALLS_PER_TURN", "3"))
     TOOL_TIMEOUT_SECONDS: float = float(os.getenv("TOOL_TIMEOUT_SECONDS", "3.0"))
     TOOL_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("TOOL_RATE_LIMIT_PER_MINUTE", "30"))
     KB_FILE_PATH: str = os.getenv("KB_FILE_PATH", "./data/kb/faq.json")
     TICKET_DB_PATH: str = os.getenv("TICKET_DB_PATH", "./data/tickets/tickets.db")
+
+    # Virtual store (e-commerce catalog) settings
+    CATALOG_DB_PATH: str = os.getenv("CATALOG_DB_PATH", "./data/catalog/catalog.db")
+    CATALOG_AUTO_SEED: bool = os.getenv("CATALOG_AUTO_SEED", "true").lower() == "true"
+
+    # Realtime + human-in-the-loop settings
+    CONVERSATION_DB_PATH: str = os.getenv("CONVERSATION_DB_PATH", "./data/conversations/conversations.db")
+    NOTIFY_WEBHOOK_URL: str = os.getenv("NOTIFY_WEBHOOK_URL", "")
+    FEEDBACK_DB_PATH: str = os.getenv("FEEDBACK_DB_PATH", "./data/feedback/feedback.db")
 
 
 def get_model_config() -> ModelConfig:

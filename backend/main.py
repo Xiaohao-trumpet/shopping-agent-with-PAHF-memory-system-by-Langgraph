@@ -28,8 +28,13 @@ from .tools import (
     ToolExecutor,
     FAQStore,
     TicketStore,
+    CatalogStore,
     register_builtin_tools,
+    register_commerce_tools,
 )
+from .realtime import ConversationStore, EventBus, ChatService, FeedbackStore
+from .realtime.api import router as realtime_router
+from .realtime.runtime import RT
 from .utils.logging import setup_logging, get_logger
 from .utils.exceptions import (
     ModelAPIException,
@@ -93,8 +98,13 @@ async def lifespan(app: FastAPI):
     # Initialize tool subsystem
     faq_store = FAQStore(kb_path=app_config.KB_FILE_PATH)
     ticket_store = TicketStore(db_path=app_config.TICKET_DB_PATH)
+    catalog_store = CatalogStore(
+        db_path=app_config.CATALOG_DB_PATH,
+        auto_seed=app_config.CATALOG_AUTO_SEED,
+    )
     tool_registry = ToolRegistry()
     register_builtin_tools(tool_registry, faq_store=faq_store, ticket_store=ticket_store)
+    register_commerce_tools(tool_registry, catalog=catalog_store)
     tool_planner = ToolPlanner(
         tools_enabled=app_config.TOOLS_ENABLED,
         max_calls_per_turn=app_config.TOOL_MAX_CALLS_PER_TURN,
@@ -121,7 +131,28 @@ async def lifespan(app: FastAPI):
         tools_enabled=app_config.TOOLS_ENABLED,
     )
     logger.info("Initialized chat graph")
-    
+
+    # Initialize realtime + human-in-the-loop subsystem (Phase B & C)
+    conversation_store = ConversationStore(db_path=app_config.CONVERSATION_DB_PATH)
+    event_bus = EventBus()
+    chat_service = ChatService(
+        conversations=conversation_store,
+        event_bus=event_bus,
+        chat_graph=chat_graph,
+        model_client=model_client,
+        catalog_store=catalog_store,
+        pahf_memory_service=pahf_memory_service,
+        logger=logger,
+        notify_webhook=app_config.NOTIFY_WEBHOOK_URL,
+    )
+    feedback_store = FeedbackStore(db_path=app_config.FEEDBACK_DB_PATH)
+    RT.chat_service = chat_service
+    RT.event_bus = event_bus
+    RT.catalog_store = catalog_store
+    RT.conversation_store = conversation_store
+    RT.feedback_store = feedback_store
+    logger.info("Initialized realtime + HITL subsystem")
+
     yield
     if pahf_memory_service is not None:
         pahf_memory_service.close()
@@ -145,6 +176,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount realtime storefront + agent-console routes (Phase B & C)
+app.include_router(realtime_router)
 
 
 # Rate limiting storage (simple in-memory)

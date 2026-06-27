@@ -57,3 +57,9 @@ docker-compose.override.yml
 # Frontend
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
+
+# Runtime data (regenerated on startup; catalog auto-seeds)
+data/catalog/
+data/conversations/
+data/feedback/
