@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Product, ConvMessage, ConvStatus, BusEvent } from "./shopTypes";
+import type {
+  Product,
+  ConvMessage,
+  ConvStatus,
+  BusEvent,
+  ProductReview,
+  ReviewStats,
+} from "./shopTypes";
 import {
   fetchCategories,
   fetchProducts,
@@ -9,6 +16,9 @@ import {
   sendMessageFeedback,
   sendRating,
   endConversation,
+  fetchProductReviews,
+  submitProductReview,
+  fetchReviewTags,
 } from "./shopApi";
 
 const CATEGORY_EMOJI: Record<string, string> = {
@@ -30,6 +40,204 @@ function emojiFor(category: string): string {
 
 function yuan(n: number): string {
   return `¥${n.toFixed(0)}`;
+}
+
+function timeAgo(ts: number): string {
+  const days = Math.max(0, Math.floor((Date.now() / 1000 - ts) / 86400));
+  if (days === 0) return "今天";
+  if (days < 30) return `${days} 天前`;
+  return `${Math.floor(days / 30)} 个月前`;
+}
+
+// -------------------------------------------------------- product reviews
+function ProductReviews({ productId, customerId }: { productId: string; customerId: string }) {
+  const [stats, setStats] = useState<ReviewStats | null>(null);
+  const [reviews, setReviews] = useState<ProductReview[]>([]);
+  const [filter, setFilter] = useState("");
+  const [writing, setWriting] = useState(false);
+  const [tagOptions, setTagOptions] = useState<string[]>([]);
+  const [rating, setRating] = useState(5);
+  const [hover, setHover] = useState(0);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    fetchProductReviews(productId, 30, filter)
+      .then((r) => {
+        setStats(r.stats);
+        setReviews(r.reviews);
+      })
+      .catch(() => undefined);
+  }, [productId, filter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    fetchReviewTags().then(setTagOptions).catch(() => setTagOptions([]));
+  }, []);
+
+  const toggleTag = (t: string) =>
+    setTags((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
+
+  const submit = async () => {
+    if (!content.trim()) return;
+    setBusy(true);
+    try {
+      await submitProductReview({ productId, customerId, rating, title, content, tags });
+      setWriting(false);
+      setTitle("");
+      setContent("");
+      setTags([]);
+      setRating(5);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const total = stats?.count ?? 0;
+  const trendUp = (stats?.rating_trend ?? 0) > 0.1;
+  const trendDown = (stats?.rating_trend ?? 0) < -0.1;
+
+  return (
+    <div className="pr">
+      <div className="pr-head">
+        <h4>用户评价 {total > 0 && <small>（{total} 条）</small>}</h4>
+        <button className="pr-write-btn" onClick={() => setWriting((w) => !w)}>
+          {writing ? "取消" : "✍️ 写评价"}
+        </button>
+      </div>
+
+      {total > 0 && stats && (
+        <div className="pr-summary">
+          <div className="pr-score">
+            <strong>{stats.avg_rating.toFixed(1)}</strong>
+            <span className="pr-score-stars">
+              {"★★★★★".slice(0, Math.round(stats.avg_rating))}
+            </span>
+            <small>
+              好评 {Math.round(stats.positive_share * 100)}%
+              {trendUp && <b className="up"> ↑近期升</b>}
+              {trendDown && <b className="down"> ↓近期降</b>}
+            </small>
+          </div>
+          <div className="pr-dist">
+            {[5, 4, 3, 2, 1].map((s) => {
+              const c = stats.distribution[String(s)] ?? 0;
+              const pct = total ? Math.round((c / total) * 100) : 0;
+              return (
+                <div key={s} className="pr-dist-row">
+                  <span>{s}★</span>
+                  <i>
+                    <b style={{ width: `${pct}%` }} />
+                  </i>
+                  <em>{c}</em>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {stats && stats.top_tags.length > 0 && (
+        <div className="pr-filter">
+          <button className={filter === "" ? "chip active" : "chip"} onClick={() => setFilter("")}>
+            全部
+          </button>
+          <button
+            className={filter === "positive" ? "chip active" : "chip"}
+            onClick={() => setFilter("positive")}
+          >
+            好评
+          </button>
+          <button
+            className={filter === "negative" ? "chip active" : "chip"}
+            onClick={() => setFilter("negative")}
+          >
+            差评
+          </button>
+          {stats.top_tags.slice(0, 5).map((t) => (
+            <span key={t.tag} className="pr-tagchip">
+              {t.tag} {t.count}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {writing && (
+        <div className="pr-form">
+          <div className="stars sm">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <span
+                key={n}
+                className={`star ${(hover || rating) >= n ? "on" : ""}`}
+                onMouseEnter={() => setHover(n)}
+                onMouseLeave={() => setHover(0)}
+                onClick={() => setRating(n)}
+              >
+                ★
+              </span>
+            ))}
+          </div>
+          <input
+            className="pr-input"
+            placeholder="标题（选填）"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <textarea
+            className="pr-textarea"
+            placeholder="说说这款商品的使用体验…"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+          />
+          <div className="tag-row">
+            {tagOptions.map((t) => (
+              <button
+                key={t}
+                className={tags.includes(t) ? "tag on" : "tag"}
+                onClick={() => toggleTag(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <button className="primary wide" disabled={busy || !content.trim()} onClick={submit}>
+            {busy ? "提交中…" : "提交评价"}
+          </button>
+        </div>
+      )}
+
+      <div className="pr-list">
+        {reviews.length === 0 && <p className="muted">暂无评价，快来第一个评价吧～</p>}
+        {reviews.map((r) => (
+          <div key={r.review_id} className="pr-item">
+            <div className="pr-item-head">
+              <span className="pr-author">{r.author_name}</span>
+              <span className={`pr-item-stars s${r.rating}`}>
+                {"★★★★★".slice(0, r.rating)}
+              </span>
+              {r.source === "ai" && <span className="pr-badge ai">AI</span>}
+              <span className="pr-time">{timeAgo(r.created_at)}</span>
+            </div>
+            {r.title && <div className="pr-item-title">{r.title}</div>}
+            <div className="pr-item-body">{r.content}</div>
+            {r.tags.length > 0 && (
+              <div className="pr-item-tags">
+                {r.tags.map((t, i) => (
+                  <span key={i}>{t}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------- chat hook
@@ -455,6 +663,7 @@ export default function Storefront() {
             <button className="primary wide" onClick={() => askAbout(detail)}>
               咨询客服
             </button>
+            <ProductReviews productId={detail.product_id} customerId={customerId} />
           </div>
         </div>
       )}

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .runtime import RT
 from .feedback_store import SUGGESTED_TAGS
+from ..analytics import REVIEW_TAGS
 
 router = APIRouter()
 
@@ -58,6 +59,15 @@ class RatingRequest(BaseModel):
     comment: str = ""
 
 
+class ProductReviewRequest(BaseModel):
+    customer_id: str = Field(..., min_length=1)
+    rating: int = Field(..., ge=1, le=5)
+    title: str = ""
+    content: str = ""
+    tags: list[str] = Field(default_factory=list)
+    author_name: str = ""
+
+
 # ------------------------------------------------------------ shop browsing
 @router.get("/api/v1/shop/categories")
 async def shop_categories():
@@ -83,6 +93,37 @@ async def shop_product_detail(product_id: str):
     if product is None:
         raise HTTPException(status_code=404, detail="product not found")
     return product
+
+
+# ---------------------------------------------------------- product reviews
+@router.get("/api/v1/shop/review-tags")
+async def shop_review_tags():
+    return {"tags": REVIEW_TAGS}
+
+
+@router.get("/api/v1/shop/products/{product_id}/reviews")
+async def shop_product_reviews(product_id: str, limit: int = 20, sentiment: str = ""):
+    stats = RT.review_store.product_review_stats(product_id)
+    reviews = RT.review_store.list_reviews(
+        product_id, limit=limit, sentiment=sentiment or None
+    )
+    return {"stats": stats, "reviews": reviews}
+
+
+@router.post("/api/v1/shop/products/{product_id}/reviews")
+async def shop_submit_review(product_id: str, req: ProductReviewRequest):
+    try:
+        return RT.analytics_service.submit_review(
+            product_id=product_id,
+            customer_id=req.customer_id,
+            rating=req.rating,
+            title=req.title,
+            content=req.content,
+            tags=req.tags,
+            author_name=req.author_name,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="product not found")
 
 
 # ----------------------------------------------------- customer chat (REST)

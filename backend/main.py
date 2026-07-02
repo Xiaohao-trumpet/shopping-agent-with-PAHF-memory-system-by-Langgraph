@@ -36,6 +36,7 @@ from .tools import (
 from .realtime import ConversationStore, EventBus, ChatService, FeedbackStore
 from .realtime.api import router as realtime_router
 from .realtime.runtime import RT
+from .analytics import ReviewStore, AIReviewer, AnalyticsService
 from .utils.logging import setup_logging, get_logger
 from .utils.exceptions import (
     ModelAPIException,
@@ -163,6 +164,21 @@ async def lifespan(app: FastAPI):
     logger.info("Initialized realtime + HITL subsystem")
     logger.info("Initialized admin auth subsystem")
 
+    # Initialize review-analytics subsystem (product & store development potential)
+    review_store = ReviewStore(db_path=app_config.REVIEW_DB_PATH)
+    ai_reviewer = AIReviewer(model_client=model_client, logger=logger)
+    analytics_service = AnalyticsService(
+        review_store=review_store,
+        catalog_store=catalog_store,
+        ai_reviewer=ai_reviewer,
+        feedback_store=feedback_store,
+        logger=logger,
+    )
+    analytics_service.ensure_seeded(auto_seed=app_config.REVIEW_AUTO_SEED)
+    RT.review_store = review_store
+    RT.analytics_service = analytics_service
+    logger.info("Initialized review-analytics subsystem")
+
     yield
     if pahf_memory_service is not None:
         pahf_memory_service.close()
@@ -247,6 +263,13 @@ class AdminLoginResponse(BaseModel):
     token_type: str = "bearer"
     expires_at: float
     user: AdminUserResponse
+
+
+class GenerateReviewsRequest(BaseModel):
+    """Admin request to AI-generate demo reviews for a product."""
+    n: int = Field(default=5, ge=1, le=12)
+    skew: str = Field(default="mixed", pattern="^(positive|mixed|critical)$")
+    persist: bool = True
 
 
 class ChatResponse(BaseModel):
@@ -424,6 +447,12 @@ def _require_backoffice_runtime() -> None:
         raise HTTPException(status_code=503, detail="Backoffice runtime is not ready")
 
 
+def _require_analytics():
+    if RT.analytics_service is None:
+        raise HTTPException(status_code=503, detail="Analytics runtime is not ready")
+    return RT.analytics_service
+
+
 # Endpoints
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -531,6 +560,70 @@ async def admin_feedback_ratings(limit: int = 100, current_admin: dict = Depends
 @app.get("/api/v1/admin/users")
 async def admin_users(current_admin: dict = Depends(_require_admin)):
     return {"users": _get_admin_store().list_users()}
+
+
+# ------------------------------------------------ review & potential analytics
+@app.get("/api/v1/admin/analytics/store")
+async def admin_analytics_store(ai: int = 0, current_admin: dict = Depends(_require_admin)):
+    """Store-level development potential + (optional AI) executive summary."""
+    analytics = _require_analytics()
+    return analytics.store_analytics(with_ai=bool(ai))
+
+
+@app.get("/api/v1/admin/analytics/products")
+async def admin_analytics_products(
+    sort: str = "score",
+    order: str = "desc",
+    category: str = "",
+    limit: int = 200,
+    current_admin: dict = Depends(_require_admin),
+):
+    """Per-product review stats + development-potential ranking."""
+    analytics = _require_analytics()
+    return {
+        "products": analytics.list_product_analytics(
+            sort=sort, order=order, category=category or None,
+            limit=max(1, min(int(limit), 500)),
+        )
+    }
+
+
+@app.get("/api/v1/admin/analytics/products/{product_id}")
+async def admin_analytics_product_detail(
+    product_id: str, ai: int = 0, current_admin: dict = Depends(_require_admin)
+):
+    """Deep-dive: stats, reviews, potential drivers and an insight narrative."""
+    analytics = _require_analytics()
+    detail = analytics.product_detail_analytics(product_id, with_ai=bool(ai))
+    if detail is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    return detail
+
+
+@app.post("/api/v1/admin/analytics/products/{product_id}/ai-insight")
+async def admin_analytics_ai_insight(
+    product_id: str, current_admin: dict = Depends(_require_admin)
+):
+    """Force a fresh AI (or heuristic-fallback) insight for a product."""
+    analytics = _require_analytics()
+    detail = analytics.product_detail_analytics(product_id, with_ai=True)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    return {"insight": detail["insight"], "potential": detail["potential"]}
+
+
+@app.post("/api/v1/admin/analytics/products/{product_id}/generate-reviews")
+async def admin_analytics_generate_reviews(
+    product_id: str, req: GenerateReviewsRequest, current_admin: dict = Depends(_require_admin)
+):
+    """AI-generate (and optionally persist) demo reviews for a product."""
+    analytics = _require_analytics()
+    try:
+        return analytics.generate_reviews_for(
+            product_id, n=req.n, skew=req.skew, persist=req.persist
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="product not found")
 
 
 @app.post("/api/v1/chat/completions")

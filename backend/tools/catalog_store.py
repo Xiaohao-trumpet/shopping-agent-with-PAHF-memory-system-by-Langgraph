@@ -419,6 +419,41 @@ class CatalogStore:
             ).fetchone()
         return int(row["s"]) > 0
 
+    def product_sales(self) -> Dict[str, Dict[str, Any]]:
+        """Per-product sales pull-through from paid orders (excludes carts that
+        are still ``pending_payment``). Used as the demand signal for potential
+        scoring. Returns ``{product_id: {units, orders, revenue}}``."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT oi.product_id AS product_id,
+                       COALESCE(SUM(oi.qty), 0) AS units,
+                       COUNT(DISTINCT oi.order_id) AS orders,
+                       COALESCE(SUM(oi.qty * oi.unit_price), 0) AS revenue
+                FROM order_items oi
+                JOIN orders o ON o.order_id = oi.order_id
+                WHERE o.status != 'pending_payment'
+                GROUP BY oi.product_id
+                """
+            ).fetchall()
+        return {
+            r["product_id"]: {
+                "units": int(r["units"]),
+                "orders": int(r["orders"]),
+                "revenue": round(float(r["revenue"]), 2),
+            }
+            for r in rows
+        }
+
+    def update_product_rating(self, product_id: str, rating: float, rating_count: int) -> None:
+        """Sync a product's headline rating with real review aggregates."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE products SET rating = ?, rating_count = ? WHERE product_id = ?",
+                (round(float(rating), 2), int(rating_count), product_id),
+            )
+            conn.commit()
+
     def check_inventory(
         self, product_id: Optional[str] = None, sku_code: Optional[str] = None
     ) -> List[Dict[str, Any]]:

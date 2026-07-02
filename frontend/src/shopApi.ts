@@ -3,6 +3,13 @@ import type {
   Conversation,
   ConvMessage,
   AgentContext,
+  ProductReview,
+  ReviewStats,
+  ProductAnalyticsRow,
+  ProductAnalyticsDetail,
+  StoreAnalytics,
+  AIInsight,
+  ProductPotential,
 } from "./shopTypes";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -43,6 +50,42 @@ export async function fetchProducts(params: {
 
 export async function fetchProductDetail(productId: string): Promise<Product> {
   return request<Product>(`/api/v1/shop/products/${encodeURIComponent(productId)}`);
+}
+
+// --------------------------------------------------------- product reviews
+export async function fetchReviewTags(): Promise<string[]> {
+  const res = await request<{ tags: string[] }>("/api/v1/shop/review-tags");
+  return res.tags ?? [];
+}
+
+export async function fetchProductReviews(
+  productId: string,
+  limit = 20,
+  sentiment = ""
+): Promise<{ stats: ReviewStats; reviews: ProductReview[] }> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (sentiment) qs.set("sentiment", sentiment);
+  return request(`/api/v1/shop/products/${encodeURIComponent(productId)}/reviews?${qs.toString()}`);
+}
+
+export async function submitProductReview(payload: {
+  productId: string;
+  customerId: string;
+  rating: number;
+  title: string;
+  content: string;
+  tags: string[];
+}): Promise<{ review_id: string }> {
+  return request(`/api/v1/shop/products/${encodeURIComponent(payload.productId)}/reviews`, {
+    method: "POST",
+    body: JSON.stringify({
+      customer_id: payload.customerId,
+      rating: payload.rating,
+      title: payload.title,
+      content: payload.content,
+      tags: payload.tags,
+    }),
+  });
 }
 
 export async function fetchConversation(
@@ -286,6 +329,60 @@ export async function fetchAdminUsers(token: string): Promise<AdminUser[]> {
     headers: authHeaders(token),
   });
   return res.users ?? [];
+}
+
+// -------------------------------------------------- admin review analytics
+export async function fetchStoreAnalytics(token: string, ai = false): Promise<StoreAnalytics> {
+  return request(`/api/v1/admin/analytics/store?ai=${ai ? 1 : 0}`, { headers: authHeaders(token) });
+}
+
+export async function fetchProductAnalytics(
+  token: string,
+  opts: { sort?: string; order?: string; category?: string; limit?: number } = {}
+): Promise<ProductAnalyticsRow[]> {
+  const qs = new URLSearchParams();
+  qs.set("sort", opts.sort ?? "score");
+  qs.set("order", opts.order ?? "desc");
+  if (opts.category) qs.set("category", opts.category);
+  qs.set("limit", String(opts.limit ?? 200));
+  const res = await request<{ products: ProductAnalyticsRow[] }>(
+    `/api/v1/admin/analytics/products?${qs.toString()}`,
+    { headers: authHeaders(token) }
+  );
+  return res.products ?? [];
+}
+
+export async function fetchProductAnalyticsDetail(
+  token: string,
+  productId: string,
+  ai = false
+): Promise<ProductAnalyticsDetail> {
+  return request(`/api/v1/admin/analytics/products/${encodeURIComponent(productId)}?ai=${ai ? 1 : 0}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function requestProductAiInsight(
+  token: string,
+  productId: string
+): Promise<{ insight: AIInsight; potential: ProductPotential }> {
+  return request(`/api/v1/admin/analytics/products/${encodeURIComponent(productId)}/ai-insight`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function generateProductReviews(
+  token: string,
+  productId: string,
+  n = 5,
+  skew: "positive" | "mixed" | "critical" = "mixed"
+): Promise<{ generated_by: string; persisted: number; reviews: Array<{ rating: number; title: string; content: string }> }> {
+  return request(`/api/v1/admin/analytics/products/${encodeURIComponent(productId)}/generate-reviews`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ n, skew, persist: true }),
+  });
 }
 
 // ------------------------------------------------------------------- sockets

@@ -100,6 +100,10 @@ class AppConfig:
     NOTIFY_WEBHOOK_URL: str = os.getenv("NOTIFY_WEBHOOK_URL", "")
     FEEDBACK_DB_PATH: str = os.getenv("FEEDBACK_DB_PATH", "./data/feedback/feedback.db")
 
+    # Product review-analytics settings
+    REVIEW_DB_PATH: str = os.getenv("REVIEW_DB_PATH", "./data/reviews/reviews.db")
+    REVIEW_AUTO_SEED: bool = os.getenv("REVIEW_AUTO_SEED", "true").lower() == "true"
+
     # Backoffice admin settings
     ADMIN_DB_PATH: str = os.getenv("ADMIN_DB_PATH", "./data/admin/admin.db")
     ADMIN_DEFAULT_USERNAME: str = os.getenv("ADMIN_DEFAULT_USERNAME", "admin")
