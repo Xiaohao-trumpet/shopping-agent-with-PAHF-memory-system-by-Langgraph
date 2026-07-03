@@ -6,8 +6,14 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
-from transformers import AutoModel, AutoTokenizer
+
+try:  # Optional: only needed when DRAGON+ embeddings are explicitly enabled.
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+except ImportError:  # pragma: no cover - lightweight SQLite deployments skip this
+    torch = None
+    AutoModel = None
+    AutoTokenizer = None
 
 try:
     import faiss
@@ -36,6 +42,12 @@ class DragonPlusEmbedding:
             context_encoder: HuggingFace model name for context/document encoding
             device: Device to run model on (default: auto-detect cuda/cpu)
         """
+        if torch is None or AutoTokenizer is None or AutoModel is None:
+            raise ImportError(
+                "DRAGON+ embeddings require optional dependencies: torch and transformers. "
+                "Install PAHF/requirements.txt or set PAHF_EMBEDDING_MODE=hash for lightweight SQLite memory."
+            )
+
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         
         # Load query encoder

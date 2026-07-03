@@ -19,13 +19,13 @@ class AdminStore:
         self,
         db_path: str,
         default_username: str = "admin",
-        default_password: str = "admin123456",
+        default_password: str = "Admin@2026!",
         session_ttl_seconds: int = 86400,
     ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_username = default_username.strip() or "admin"
-        self.default_password = default_password or "admin123456"
+        self.default_password = default_password or "Admin@2026!"
         self.session_ttl_seconds = max(300, int(session_ttl_seconds))
         self._init_db()
         self._ensure_default_admin()

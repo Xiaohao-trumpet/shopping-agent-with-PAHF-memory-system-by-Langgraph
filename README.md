@@ -440,7 +440,7 @@ npm run build
 
 ```text
 账号：admin
-密码：admin123456
+密码：Admin@2026!
 ```
 
 后台管理能力：
@@ -468,7 +468,7 @@ data/pahf/pahf_memory.db         # PAHF 用户记忆
 
 ## Roadmap
 
-- 支持流式输出（`/api/v1/chat/stream` 实装）
+- 前端聊天 UI 支持 token 级流式展示
 - 丰富工具链与业务插件
 - 增加更细粒度的记忆审计与可视化
 - 增加部署模板（Docker / 云服务）

@@ -81,8 +81,12 @@ def test_chat_endpoint_validation_error(client):
     assert response.status_code == 422  # Validation error
 
 
-def test_chat_stream_placeholder(client):
-    """Test streaming endpoint placeholder."""
+def test_chat_stream_sse(client, mock_dependencies):
+    """Test streaming endpoint emits server-sent events."""
+    async def fake_stream(**kwargs):
+        yield "Hello"
+
+    mock_dependencies["model"].astream = fake_stream
     request_data = {
         "user_id": "test_user",
         "message": "Hello"
@@ -91,5 +95,7 @@ def test_chat_stream_placeholder(client):
     response = client.post("/api/v1/chat/stream", json=request_data)
     
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "not_implemented"
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: delta" in response.text
+    assert "Hello" in response.text
+    assert "event: done" in response.text

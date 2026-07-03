@@ -3,20 +3,175 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import math
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import AppConfig, ModelConfig
 from ..utils.httpx_compat import patch_httpx_for_openai
 
 patch_httpx_for_openai()
+import numpy as np
 from openai import OpenAI
 
-from PAHF.memory.banks import DragonPlusEmbedding, FAISSMemoryBank, MemoryBank, SQLiteMemoryBank
-from PAHF.prompts.shopping_prompts import integration_prompt
+try:
+    from PAHF.memory.banks import DragonPlusEmbedding, FAISSMemoryBank, MemoryBank, SQLiteMemoryBank
+    from PAHF.prompts.shopping_prompts import integration_prompt
+except ModuleNotFoundError:
+    DragonPlusEmbedding = None
+    FAISSMemoryBank = None
+
+    class MemoryBank:
+        def add(self, text: str) -> None:
+            raise NotImplementedError
+
+        def search(self, query: str, top_k: int = 2) -> List[Tuple[float, str]]:
+            raise NotImplementedError
+
+        def find_similar_memory(self, text: str, threshold: Optional[float] = None) -> Optional[int]:
+            raise NotImplementedError
+
+        def update_memory(self, memory_id: int, new_text: str) -> None:
+            raise NotImplementedError
+
+        def get_memory(self, memory_id: int) -> Optional[str]:
+            raise NotImplementedError
+
+        def get_all_memories(self) -> List[Tuple[int, str]]:
+            raise NotImplementedError
+
+        def close(self) -> None:
+            raise NotImplementedError
+
+    class SQLiteMemoryBank(MemoryBank):
+        """Small PAHF-compatible SQLite bank used when the PAHF package is not bundled."""
+
+        def __init__(
+            self,
+            db_path: str = "shared_memory_bank.db",
+            person_id: str = "",
+            embedding_model=None,
+        ):
+            if person_id is None:
+                raise ValueError("person_id is required for SQLiteMemoryBank")
+
+            self.db_path = db_path
+            self.person_id = person_id
+            self.embeddings = embedding_model or HashEmbedding()
+            db_dir = Path(db_path).parent
+            if str(db_dir) not in {"", "."}:
+                db_dir.mkdir(parents=True, exist_ok=True)
+
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.cursor = self.conn.cursor()
+            self._create_table()
+
+        def _create_table(self) -> None:
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS docs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding BLOB NOT NULL
+                )
+                """
+            )
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_person_id ON docs(person_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_person_text ON docs(person_id, text)")
+            self.conn.commit()
+
+        def _embed_document(self, text: str) -> np.ndarray:
+            return np.array(self.embeddings.embed_documents([text])[0], dtype=np.float32)
+
+        def _embed_query(self, text: str) -> np.ndarray:
+            return np.array(self.embeddings.embed_query(text), dtype=np.float32)
+
+        def add(self, text: str) -> None:
+            self.cursor.execute(
+                "SELECT 1 FROM docs WHERE person_id = ? AND text = ? LIMIT 1",
+                (self.person_id, text),
+            )
+            if self.cursor.fetchone():
+                return
+
+            emb = self._embed_document(text)
+            self.cursor.execute(
+                "INSERT INTO docs (person_id, text, embedding) VALUES (?, ?, ?)",
+                (self.person_id, text, emb.tobytes()),
+            )
+            self.conn.commit()
+
+        def _rows_with_scores(self, query: str) -> List[Tuple[int, str, float]]:
+            query_emb = self._embed_query(query)
+            self.cursor.execute(
+                "SELECT id, text, embedding FROM docs WHERE person_id = ?",
+                (self.person_id,),
+            )
+            scored: List[Tuple[int, str, float]] = []
+            for memory_id, text, raw_embedding in self.cursor.fetchall():
+                embedding = np.frombuffer(raw_embedding, dtype=np.float32)
+                if embedding.shape != query_emb.shape:
+                    continue
+                score = float(embedding @ query_emb)
+                scored.append((int(memory_id), text, score))
+            scored.sort(key=lambda row: row[2], reverse=True)
+            return scored
+
+        def search(self, query: str, top_k: int = 2) -> List[Tuple[float, str]]:
+            return [(score, text) for _, text, score in self._rows_with_scores(query)[:top_k]]
+
+        def find_similar_memory(self, text: str, threshold: Optional[float] = None) -> Optional[int]:
+            rows = self._rows_with_scores(text)
+            if not rows:
+                return None
+
+            memory_id, _, score = rows[0]
+            if threshold is None or score > threshold:
+                return memory_id
+            return None
+
+        def update_memory(self, memory_id: int, new_text: str) -> None:
+            emb = self._embed_document(new_text)
+            self.cursor.execute(
+                """
+                UPDATE docs
+                SET text = ?, embedding = ?
+                WHERE id = ? AND person_id = ?
+                """,
+                (new_text, emb.tobytes(), memory_id, self.person_id),
+            )
+            self.conn.commit()
+
+        def get_memory(self, memory_id: int) -> Optional[str]:
+            self.cursor.execute(
+                "SELECT text FROM docs WHERE id = ? AND person_id = ?",
+                (memory_id, self.person_id),
+            )
+            row = self.cursor.fetchone()
+            return row[0] if row else None
+
+        def get_all_memories(self) -> List[Tuple[int, str]]:
+            self.cursor.execute(
+                "SELECT id, text FROM docs WHERE person_id = ? ORDER BY id",
+                (self.person_id,),
+            )
+            return [(int(memory_id), text) for memory_id, text in self.cursor.fetchall()]
+
+        def close(self) -> None:
+            self.conn.close()
+
+    integration_prompt = (
+        "Please create a concise integrated memory.\n"
+        "Existing memory: {existing_memory}\n"
+        "New information: {summ_info}\n"
+        "Return only the updated memory sentence."
+    )
 
 
 @dataclass
@@ -70,6 +225,44 @@ class PahfLLMClient:
         raise RuntimeError("PAHF LLM generation failed unexpectedly")
 
 
+class HashEmbedding:
+    """Small deterministic embedding for lightweight SQLite deployments.
+
+    It keeps PAHF memory searchable without requiring torch/transformers during
+    demos or serverless deployments. DRAGON+ remains available by setting
+    ``PAHF_EMBEDDING_MODE=dragon``.
+    """
+
+    def __init__(self, dimension: int = 96):
+        self.dimension = max(16, int(dimension))
+
+    def _tokens(self, text: str) -> List[str]:
+        ascii_tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        cjk_chars = re.findall(r"[\u4e00-\u9fff]", text)
+        return ascii_tokens + cjk_chars
+
+    def _embed(self, text: str) -> List[float]:
+        vector = [0.0] * self.dimension
+        tokens = self._tokens(text)
+        if not tokens:
+            return vector
+
+        for token in tokens:
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "big") % self.dimension
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[bucket] += sign
+
+        norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+        return [v / norm for v in vector]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._embed(text) for text in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._embed(text)
+
+
 class PAHFMemoryService:
     """PAHF-only memory service using official MemoryBank backends."""
 
@@ -87,6 +280,7 @@ class PAHFMemoryService:
         device: Optional[str],
         enable_pre_clarification: bool,
         enable_post_correction: bool,
+        embedding_mode: str = "hash",
         embedding_model: Any = None,
     ):
         normalized_backend = backend.strip().lower()
@@ -102,6 +296,7 @@ class PAHFMemoryService:
         self.query_encoder = query_encoder
         self.context_encoder = context_encoder
         self.device = device
+        self.embedding_mode = (embedding_mode or "hash").strip().lower()
         self.enable_pre_clarification = enable_pre_clarification
         self.enable_post_correction = enable_post_correction
 
@@ -120,6 +315,11 @@ class PAHFMemoryService:
     def _validate_backend_compatibility(self) -> None:
         if self.backend != "faiss":
             return
+        if FAISSMemoryBank is None:
+            raise ImportError(
+                "PAHF_BACKEND=faiss requires the PAHF package and faiss dependency. "
+                "Use PAHF_BACKEND=sqlite for lightweight Vercel deployments."
+            )
 
         class _NoopEmbedding:
             def embed_documents(self, texts: List[str]) -> List[List[float]]:
@@ -139,11 +339,19 @@ class PAHFMemoryService:
         if self._external_embedding_model is not None:
             return self._external_embedding_model
         if self._shared_embedding_model is None:
-            self._shared_embedding_model = DragonPlusEmbedding(
-                query_encoder=self.query_encoder,
-                context_encoder=self.context_encoder,
-                device=self.device,
-            )
+            if self.embedding_mode in {"dragon", "dragonplus", "dragon+"}:
+                if DragonPlusEmbedding is None:
+                    raise ImportError(
+                        "PAHF_EMBEDDING_MODE=dragon requires the PAHF package plus torch/transformers. "
+                        "Use PAHF_EMBEDDING_MODE=hash for lightweight deployments."
+                    )
+                self._shared_embedding_model = DragonPlusEmbedding(
+                    query_encoder=self.query_encoder,
+                    context_encoder=self.context_encoder,
+                    device=self.device,
+                )
+            else:
+                self._shared_embedding_model = HashEmbedding()
         return self._shared_embedding_model
 
     def _create_bank(self, person_id: str) -> MemoryBank:
@@ -426,6 +634,7 @@ def build_pahf_memory_service(app_config: AppConfig, model_config: ModelConfig) 
         query_encoder=app_config.PAHF_QUERY_ENCODER,
         context_encoder=app_config.PAHF_CONTEXT_ENCODER,
         device=app_config.PAHF_EMBED_DEVICE or None,
+        embedding_mode=app_config.PAHF_EMBEDDING_MODE,
         enable_pre_clarification=app_config.PAHF_ENABLE_PRE_CLARIFICATION,
         enable_post_correction=app_config.PAHF_ENABLE_POST_CORRECTION,
     )

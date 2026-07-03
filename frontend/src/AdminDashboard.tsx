@@ -104,7 +104,7 @@ export default function AdminDashboard() {
   );
   const [user, setUser] = useState<AdminUser | null>(null);
   const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123456");
+  const [password, setPassword] = useState("");
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
   const [statusFilter, setStatusFilter] = useState("all");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
@@ -213,7 +213,7 @@ export default function AdminDashboard() {
           <button className="primary wide" disabled={loading}>
             {loading ? "登录中..." : "登录"}
           </button>
-          <p className="admin-demo-account">演示账号：admin / admin123456</p>
+          <p className="admin-demo-account">管理员账号由后端认证库校验</p>
         </form>
       </main>
     );

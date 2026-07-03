@@ -9,7 +9,11 @@ customer-service agent. It follows the same lightweight, local-first design as
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
+import hmac
 import re
+import secrets
 import sqlite3
 import time
 import uuid
@@ -17,8 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-DEMO_CATALOG_VERSION = "2026-07-rich-catalog-v2"
+DEMO_CATALOG_VERSION = "2026-07-rich-catalog-v3"
 DEMO_CATALOG_MIN_PRODUCTS = 40
+DEFAULT_CUSTOMER_PASSWORD = "Shop@2026!"
 
 
 def _tokenize(text: str) -> List[str]:
@@ -93,6 +98,7 @@ class CatalogStore:
                     email       TEXT NOT NULL,
                     phone       TEXT NOT NULL,
                     tier        TEXT NOT NULL,
+                    password_hash TEXT NOT NULL DEFAULT '',
                     created_at  REAL NOT NULL
                 );
 
@@ -160,7 +166,38 @@ class CatalogStore:
                 );
                 """
             )
+            self._ensure_customer_password_column(conn)
             conn.commit()
+
+    @staticmethod
+    def _ensure_customer_password_column(conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(customers)").fetchall()}
+        if "password_hash" not in columns:
+            conn.execute("ALTER TABLE customers ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _hash_password(password: str, salt: Optional[bytes] = None, iterations: int = 200_000) -> str:
+        salt = salt or secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return "pbkdf2_sha256${}${}${}".format(
+            iterations,
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+
+    @classmethod
+    def _verify_password(cls, password: str, encoded: str) -> bool:
+        try:
+            algorithm, iterations_raw, salt_raw, digest_raw = encoded.split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            iterations = int(iterations_raw)
+            salt = base64.b64decode(salt_raw.encode("ascii"))
+            expected = base64.b64decode(digest_raw.encode("ascii"))
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+            return hmac.compare_digest(actual, expected)
+        except Exception:
+            return False
 
     def is_empty(self) -> bool:
         with self._connect() as conn:
@@ -227,6 +264,17 @@ class CatalogStore:
             "image_url": CatalogStore._image_url(row["product_id"], row["image_url"]),
             "attributes": json.loads(row["attributes_json"] or "{}"),
             "status": row["status"],
+        }
+
+    @staticmethod
+    def _customer_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "customer_id": row["customer_id"],
+            "name": row["name"],
+            "email": row["email"],
+            "phone": row["phone"],
+            "tier": row["tier"],
+            "created_at": float(row["created_at"]),
         }
 
     @staticmethod
@@ -373,6 +421,37 @@ class CatalogStore:
             "orders_by_status": {r["status"]: int(r["c"]) for r in status_rows},
             "categories": [{"category": r["category"], "count": int(r["c"])} for r in category_rows],
         }
+
+    def get_customer(self, customer_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM customers WHERE customer_id = ?",
+                (customer_id.strip(),),
+            ).fetchone()
+        return self._customer_row(row) if row else None
+
+    def authenticate_customer(self, customer_id: str, password: str) -> Optional[Dict[str, Any]]:
+        customer_id = customer_id.strip()
+        if not customer_id or not password:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM customers WHERE customer_id = ?",
+                (customer_id,),
+            ).fetchone()
+            if row is None or not self._verify_password(password, row["password_hash"]):
+                return None
+        return self._customer_row(row)
+
+    def list_customer_accounts(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM customers
+                   ORDER BY created_at ASC, customer_id ASC
+                   LIMIT ?""",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [self._customer_row(row) for row in rows]
 
     def list_products_for_admin(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._connect() as conn:
@@ -918,32 +997,33 @@ class CatalogStore:
                          json.dumps(sku_attrs, ensure_ascii=False), sku_price, stock, "active"),
                     )
 
-            # Demo customers. customer_id is intended to equal the PAHF person_id /
+            # Seed customers. customer_id is intended to equal the PAHF person_id /
             # chat user_id so memory and orders line up for the same person.
+            customer_password_hash = self._hash_password(DEFAULT_CUSTOMER_PASSWORD)
             customers = [
-                ("demo-user", "演示用户", "demo@shop.local", "13800000000", "gold", now - 200 * day),
-                ("u1001", "李雷", "lilei@shop.local", "13900000001", "silver", now - 120 * day),
-                ("u1002", "韩梅梅", "hanmeimei@shop.local", "13900000002", "gold", now - 90 * day),
+                ("c9001", "林小满", "linxiaoman@shop.local", "13800000000", "gold", customer_password_hash, now - 200 * day),
+                ("u1001", "李雷", "lilei@shop.local", "13900000001", "silver", customer_password_hash, now - 120 * day),
+                ("u1002", "韩梅梅", "hanmeimei@shop.local", "13900000002", "gold", customer_password_hash, now - 90 * day),
             ]
-            for cid, name, email, phone, tier, created in customers:
+            for cid, name, email, phone, tier, password_hash, created in customers:
                 conn.execute(
-                    """INSERT INTO customers(customer_id, name, email, phone, tier, created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (cid, name, email, phone, tier, created),
+                    """INSERT INTO customers(customer_id, name, email, phone, tier, password_hash, created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (cid, name, email, phone, tier, password_hash, created),
                 )
 
             # Orders + items + shipments.
             orders = [
                 # order_id, customer, status, created_offset_days, address, method, items, shipment
-                ("SO20260012", "demo-user", "shipped", 3, "上海市浦东新区世纪大道100号", "顺丰标快",
+                ("SO20260012", "c9001", "shipped", 3, "上海市浦东新区世纪大道100号", "顺丰标快",
                  [("P1002-WHT", "P1002", "声波 X 主动降噪耳机", 1, 899.0)],
-                 ("SF", "SF1234567890", "in_transit",
+                 ("SF", "SF2026070301", "in_transit",
                   [("已揽收", 3), ("到达上海转运中心", 2), ("运输中", 1)])),
-                ("SO20260027", "demo-user", "delivered", 12, "上海市浦东新区世纪大道100号", "京东物流",
+                ("SO20260027", "c9001", "delivered", 12, "上海市浦东新区世纪大道100号", "京东物流",
                  [("P4001-STD", "P4001", "水光保湿精华 30ml", 2, 239.0)],
                  ("JD", "JD9988776655", "delivered",
                   [("已揽收", 12), ("运输中", 11), ("已签收", 10)])),
-                ("SO20260041", "demo-user", "pending_payment", 0, "上海市浦东新区世纪大道100号", "顺丰标快",
+                ("SO20260041", "c9001", "pending_payment", 0, "上海市浦东新区世纪大道100号", "顺丰标快",
                  [("P2001-BLK-M", "P2001", "云感纯棉圆领卫衣", 1, 199.0)],
                  None),
                 ("SO20260050", "u1001", "shipped", 2, "北京市海淀区中关村大街1号", "中通快递",
@@ -955,7 +1035,7 @@ class CatalogStore:
                   ("P5004-STD", "P5004", "PPSU 宽口奶瓶 240ml", 1, 89.0)],
                  ("JD", "JD2026070201", "delivered",
                   [("已揽收", 6), ("到达杭州分拨中心", 5), ("派送中", 4), ("已签收", 4)])),
-                ("SO20260073", "demo-user", "delivered", 18, "上海市浦东新区世纪大道100号", "顺丰标快",
+                ("SO20260073", "c9001", "delivered", 18, "上海市浦东新区世纪大道100号", "顺丰标快",
                  [("P2004-BLK-42", "P2004", "云弹缓震跑步鞋", 1, 399.0),
                   ("P7004-GREEN", "P7004", "防滑 TPE 瑜伽垫 6mm", 1, 89.0)],
                  ("SF", "SF2026070202", "delivered",

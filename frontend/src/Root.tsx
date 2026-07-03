@@ -4,7 +4,7 @@ import Storefront from "./Storefront";
 import AgentConsole from "./AgentConsole";
 import App from "./App";
 import AdminDashboard from "./AdminDashboard";
-import { loginAdmin, logoutAdmin } from "./shopApi";
+import { loginAdmin, loginCustomer, logoutAdmin } from "./shopApi";
 
 type View = "store" | "console" | "admin" | "debug";
 type PortalRole = "customer" | "merchant";
@@ -21,11 +21,6 @@ interface PortalSession {
 
 const PORTAL_SESSION_KEY = "servicebot_portal_session_v1";
 const ADMIN_TOKEN_KEY = "servicebot_admin_token";
-
-const CUSTOMER_ACCOUNTS: Record<string, { password: string; displayName: string; customerId: string }> = {
-  "demo-user": { password: "user123456", displayName: "演示顾客", customerId: "demo-user" },
-  u1001: { password: "user123456", displayName: "李雷", customerId: "u1001" },
-};
 
 const CUSTOMER_TABS: Array<{ key: View; label: string }> = [
   { key: "store", label: "🛒 商城" },
@@ -136,8 +131,8 @@ export default function Root() {
 
 function LoginScreen({ onLogin }: { onLogin: (session: PortalSession) => void }) {
   const [role, setRole] = useState<PortalRole>("customer");
-  const [username, setUsername] = useState("demo-user");
-  const [password, setPassword] = useState("user123456");
+  const [username, setUsername] = useState("c9001");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -145,11 +140,11 @@ function LoginScreen({ onLogin }: { onLogin: (session: PortalSession) => void })
     setRole(nextRole);
     setError("");
     if (nextRole === "customer") {
-      setUsername("demo-user");
-      setPassword("user123456");
+      setUsername("c9001");
+      setPassword("");
     } else {
       setUsername("admin");
-      setPassword("admin123456");
+      setPassword("");
     }
   };
 
@@ -159,15 +154,12 @@ function LoginScreen({ onLogin }: { onLogin: (session: PortalSession) => void })
     setError("");
     try {
       if (role === "customer") {
-        const account = CUSTOMER_ACCOUNTS[username.trim()];
-        if (!account || account.password !== password) {
-          throw new Error("顾客账号或密码错误");
-        }
+        const session = await loginCustomer(username.trim(), password);
         onLogin({
           role: "customer",
-          username: username.trim(),
-          displayName: account.displayName,
-          customerId: account.customerId,
+          username: session.customer.customer_id,
+          displayName: session.customer.name,
+          customerId: session.customer.customer_id,
         });
         return;
       }
@@ -234,8 +226,7 @@ function LoginScreen({ onLogin }: { onLogin: (session: PortalSession) => void })
             {loading ? "登录中..." : "登录系统"}
           </button>
           <div className="portal-demo-accounts">
-            <span>顾客：demo-user / user123456</span>
-            <span>商家：admin / admin123456</span>
+            <span>账号由后端种子数据与管理员库校验</span>
           </div>
         </form>
       </section>

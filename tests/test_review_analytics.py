@@ -126,6 +126,6 @@ def test_analytics_service_end_to_end(tmp_path):
 
     # A user review folds into the product's headline rating count.
     prod_before = catalog.get_product(pid)
-    svc.submit_review(pid, "demo-user", 5, content="满意")
+    svc.submit_review(pid, "c9001", 5, content="满意")
     prod_after = catalog.get_product(pid)
     assert prod_after["rating_count"] == prod_before["rating_count"] + 1

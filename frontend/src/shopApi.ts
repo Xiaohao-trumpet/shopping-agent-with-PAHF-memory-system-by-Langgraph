@@ -14,8 +14,13 @@ import type {
   Shipment,
 } from "./shopTypes";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
-const WS_BASE = API_BASE.replace(/^http/, "ws");
+const DEFAULT_API_BASE = import.meta.env.PROD ? "/server" : "http://localhost:8000";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE).replace(/\/$/, "");
+const WS_BASE = API_BASE.startsWith("http")
+  ? API_BASE.replace(/^http/, "ws")
+  : `${typeof window === "undefined" ? "" : window.location.protocol === "https:" ? "wss" : "ws"}://${
+      typeof window === "undefined" ? "" : window.location.host
+    }${API_BASE}`;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -267,6 +272,19 @@ export interface AdminUser {
   last_login_at?: number | null;
 }
 
+export interface CustomerUser {
+  customer_id: string;
+  name: string;
+  email: string;
+  phone: string;
+  tier: string;
+  created_at: number;
+}
+
+export interface CustomerLoginResponse {
+  customer: CustomerUser;
+}
+
 export interface AdminLoginResponse {
   access_token: string;
   token_type: "bearer";
@@ -326,6 +344,13 @@ export async function loginAdmin(username: string, password: string): Promise<Ad
   return request("/api/v1/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function loginCustomer(customerId: string, password: string): Promise<CustomerLoginResponse> {
+  return request("/api/v1/auth/customer-login", {
+    method: "POST",
+    body: JSON.stringify({ customer_id: customerId, password }),
   });
 }
 

@@ -1,0 +1,17 @@
+.env
+.env.local
+.venv
+venv
+env
+frontend/node_modules
+frontend/dist
+__pycache__
+.pytest_cache
+data/catalog
+data/conversations
+data/feedback
+data/admin
+data/reviews
+data/pahf
+data/memory
+*.log

@@ -1,0 +1,17 @@
+{
+  "experimentalServices": {
+    "web": {
+      "entrypoint": "frontend",
+      "routePrefix": "/"
+    },
+    "server": {
+      "entrypoint": "backend/vercel_app.py",
+      "routePrefix": "/server",
+      "includeFiles": [
+        "../backend/**",
+        "../PAHF/**",
+        "../data/kb/**"
+      ]
+    }
+  }
+}

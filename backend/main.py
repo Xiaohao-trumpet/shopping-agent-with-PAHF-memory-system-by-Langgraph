@@ -63,6 +63,9 @@ tool_executor = None
 prompt_builder = None
 admin_store: Optional[AdminStore] = None
 
+MIN_MODEL_OUTPUT_TOKENS = 512
+MAX_MODEL_OUTPUT_TOKENS = 4096
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -250,6 +253,25 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=200)
 
 
+class CustomerLoginRequest(BaseModel):
+    """Customer login payload."""
+    customer_id: str = Field(..., min_length=1, max_length=80)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+class CustomerUserResponse(BaseModel):
+    customer_id: str
+    name: str
+    email: str
+    phone: str
+    tier: str
+    created_at: float
+
+
+class CustomerLoginResponse(BaseModel):
+    customer: CustomerUserResponse
+
+
 class AdminUserResponse(BaseModel):
     username: str
     role: str
@@ -405,6 +427,12 @@ def _render_recent_history(messages: list[OpenAIChatMessage], keep: int = 8) -> 
     return "\n".join(rendered).strip()
 
 
+def _effective_max_tokens(max_tokens: Optional[int]) -> Optional[int]:
+    if max_tokens is None:
+        return None
+    return max(MIN_MODEL_OUTPUT_TOKENS, min(int(max_tokens), MAX_MODEL_OUTPUT_TOKENS))
+
+
 def _get_admin_store() -> AdminStore:
     global admin_store
     if admin_store is None:
@@ -447,6 +475,12 @@ def _require_backoffice_runtime() -> None:
         raise HTTPException(status_code=503, detail="Backoffice runtime is not ready")
 
 
+def _require_catalog_store():
+    if RT.catalog_store is None:
+        raise HTTPException(status_code=503, detail="Catalog runtime is not ready")
+    return RT.catalog_store
+
+
 def _require_analytics():
     if RT.analytics_service is None:
         raise HTTPException(status_code=503, detail="Analytics runtime is not ready")
@@ -480,6 +514,17 @@ async def list_prompt_scenes():
         "scenes": ["default", "it_helpdesk"],
         "default_scene": model_config.system_prompt_scene,
     }
+
+
+@app.post("/api/v1/auth/customer-login", response_model=CustomerLoginResponse)
+async def customer_login(request: CustomerLoginRequest):
+    """Authenticate a storefront customer against the seeded customer table."""
+    customer = _require_catalog_store().authenticate_customer(
+        request.customer_id, request.password
+    )
+    if customer is None:
+        raise HTTPException(status_code=401, detail="Invalid customer id or password")
+    return CustomerLoginResponse(customer=CustomerUserResponse(**customer))
 
 
 @app.post("/api/v1/auth/login", response_model=AdminLoginResponse)
@@ -647,32 +692,50 @@ async def chat_completions(request: OpenAIChatCompletionRequest):
         composed_message = "\n\n".join(context_parts) + "\n\nCurrent user message:\n" + user_message
 
     user_id = request.user or "frontend_user"
-    result = await chat(
-        ChatRequest(
-            user_id=user_id,
-            message=composed_message,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        )
-    )
-
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     model_name = request.model or model_config.model_name
+    effective_max_tokens = _effective_max_tokens(request.max_tokens)
 
     if request.stream:
-        def event_stream():
-            first_chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [{
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": result.response},
-                    "finish_reason": None
-                }]
-            }
+        if model_client is None:
+            raise HTTPException(status_code=503, detail="Model client is not initialized")
+
+        async def event_stream():
+            first = True
+            try:
+                async for content in model_client.astream(
+                    user_id=user_id,
+                    message=composed_message,
+                    temperature=request.temperature,
+                    max_tokens=effective_max_tokens,
+                    use_history=False,
+                ):
+                    delta = {"content": content}
+                    if first:
+                        delta["role"] = "assistant"
+                        first = False
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                error_chunk = {
+                    "error": {
+                        "message": str(exc),
+                        "type": "stream_error",
+                    }
+                }
+                yield f"event: error\ndata: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+
             final_chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -684,11 +747,19 @@ async def chat_completions(request: OpenAIChatCompletionRequest):
                     "finish_reason": "stop"
                 }]
             }
-            yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    result = await chat(
+        ChatRequest(
+            user_id=user_id,
+            message=composed_message,
+            temperature=request.temperature,
+            max_tokens=effective_max_tokens
+        )
+    )
 
     return {
         "id": completion_id,
@@ -734,7 +805,7 @@ async def chat(request: ChatRequest):
             "user_message": request.message,
             "response": None,
             "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
+            "max_tokens": _effective_max_tokens(request.max_tokens),
             "session": session,
         }
         
@@ -791,18 +862,34 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/v1/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """
-    Streaming chat endpoint (placeholder for Phase 2+).
-    
-    Future implementation will support server-sent events or chunked responses
-    to stream tokens as they are generated by the model.
-    
-    This enables real-time responses and better user experience for long outputs.
-    """
-    return {
-        "status": "not_implemented",
-        "message": "Streaming support will be added in Phase 2"
-    }
+    """Server-Sent Events chat endpoint backed by OpenAI-compatible streaming."""
+    if model_client is None:
+        raise HTTPException(status_code=503, detail="Model client is not initialized")
+
+    try:
+        check_rate_limit(request.user_id)
+    except RateLimitExceededException as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    async def event_stream():
+        started = time.time()
+        try:
+            async for content in model_client.astream(
+                user_id=request.user_id,
+                message=request.message,
+                temperature=request.temperature,
+                max_tokens=_effective_max_tokens(request.max_tokens),
+            ):
+                payload = {"type": "delta", "content": content}
+                yield f"event: delta\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            done = {"type": "done", "latency_ms": round((time.time() - started) * 1000, 2)}
+            yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            payload = {"type": "error", "message": str(exc)}
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _memory_to_response(item) -> MemoryResponse:

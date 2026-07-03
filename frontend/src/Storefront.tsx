@@ -605,7 +605,7 @@ interface StorefrontProps {
 }
 
 export default function Storefront({
-  initialCustomerId = "demo-user",
+  initialCustomerId = "c9001",
   lockedCustomerId = false,
   customerName = "",
 }: StorefrontProps) {
