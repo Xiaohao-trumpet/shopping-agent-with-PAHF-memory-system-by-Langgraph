@@ -24,6 +24,7 @@ class ChatService:
         conversations: ConversationStore,
         event_bus: EventBus,
         chat_graph,
+        memory_writeback_graph=None,
         model_client=None,
         catalog_store=None,
         pahf_memory_service=None,
@@ -33,6 +34,7 @@ class ChatService:
         self.conversations = conversations
         self.bus = event_bus
         self.chat_graph = chat_graph
+        self.memory_writeback_graph = memory_writeback_graph
         self.model_client = model_client
         self.catalog = catalog_store
         self.pahf = pahf_memory_service
@@ -79,6 +81,16 @@ class ChatService:
             "counts": self.conversations.counts_by_status(),
             "online_agents": self.online_agent_count(),
         }
+
+    async def _run_memory_writeback(self, state: dict) -> None:
+        """Fire-and-forget PAHF post-action correction. Failures are logged,
+        never raised, so a flaky memory write never surfaces to the customer."""
+        if self.memory_writeback_graph is None:
+            return
+        try:
+            await asyncio.to_thread(self.memory_writeback_graph.invoke, state)
+        except Exception as exc:
+            self._log("error", f"memory writeback failed: {exc}")
 
     # ----------------------------------------------------- customer messaging
     async def handle_customer_message(self, customer_id: str, content: str) -> Dict[str, Any]:
@@ -127,6 +139,11 @@ class ChatService:
                 message="系统繁忙，正在为您转接人工客服。", signals=["graph_error"],
             )
             return await self._escalate(conv, fail, ai_draft=None)
+
+        # PAHF post-action memory correction (extraction + add/update) doesn't
+        # affect what we reply with, so it runs in the background instead of
+        # adding 2-3 more sequential LLM calls before the customer sees a reply.
+        asyncio.create_task(self._run_memory_writeback(result))
 
         response_text = result.get("response", "") or ""
         trace = {

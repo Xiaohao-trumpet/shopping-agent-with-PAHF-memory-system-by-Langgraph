@@ -35,11 +35,12 @@ class UniversalChat:
         api_key: str,
         system_prompt: str,
         default_temperature: float = 0.7,
-        default_max_tokens: int = 1024
+        default_max_tokens: int = 1024,
+        request_timeout_seconds: float = 20.0,
     ):
         """
         Initialize the universal chat client.
-        
+
         Args:
             model_name: Name of the model to use (e.g., "qwen-plus", "llama3-8b")
             base_url: Base URL of the OpenAI-compatible endpoint
@@ -47,6 +48,8 @@ class UniversalChat:
             system_prompt: System message to set the assistant's behavior
             default_temperature: Default sampling temperature
             default_max_tokens: Default maximum tokens to generate
+            request_timeout_seconds: Per-request timeout so a stalled upstream
+                call fails fast instead of hanging on the SDK's ~10 minute default
         """
         self.model_name = model_name
         self.base_url = base_url
@@ -54,11 +57,15 @@ class UniversalChat:
         self.system_prompt = system_prompt
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
-        
-        # Initialize OpenAI client
+
+        # Initialize OpenAI client. max_retries=1 keeps a single automatic retry
+        # for transient network errors without stacking on top of any
+        # caller-side retry logic.
         self.client = OpenAI(
             api_key=api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=request_timeout_seconds,
+            max_retries=1,
         )
         
         # In-memory conversation history per user

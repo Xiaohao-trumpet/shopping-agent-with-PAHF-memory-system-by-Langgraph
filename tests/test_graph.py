@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from unittest.mock import Mock
 
-from backend.agents.graph import create_chat_graph
+from backend.agents.graph import create_chat_graph, create_generation_graph, create_memory_writeback_graph
 from backend.pahf_memory.service import PAHFMemoryService
 
 
@@ -140,5 +140,54 @@ def test_graph_executes_pahf_memory_flow():
         memories = service.get_all_memories("u1")
         assert len(memories) == 1
         assert "31" in memories[0].text
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_generation_graph_stops_before_memory_writeback():
+    """The generation-only graph (used by the live serving paths) must return
+    a response without running PAHF's post-action extraction/update -- those
+    run afterwards, out of the request's critical path, via a separate graph."""
+    tmp_dir = _tmp_dir("graph_split")
+    try:
+        mock_model = Mock()
+        mock_model.chat = Mock(return_value="Assistant reply")
+        service = build_service(tmp_dir)
+
+        gen_graph = create_generation_graph(
+            model_client=mock_model,
+            pahf_memory_service=service,
+            tool_planner=None,
+            tool_executor=None,
+            tool_registry=None,
+            prompt_builder=None,
+            tools_enabled=False,
+        )
+
+        result = gen_graph.invoke(
+            {
+                "user_id": "u2",
+                "user_message": "My name is Xiaohao and my shoe size is 30.",
+                "response": None,
+                "temperature": None,
+                "max_tokens": None,
+                "session": None,
+            }
+        )
+
+        assert result["response"] == "Assistant reply"
+        assert "memory_candidate" not in result
+        assert "memory_update" not in result
+        # Nothing has been written to memory yet -- extraction/update haven't run.
+        assert service.get_all_memories("u2") == []
+
+        writeback_graph = create_memory_writeback_graph(service)
+        final = writeback_graph.invoke(result)
+
+        assert final["memory_update"]["updated"] is True
+        assert final["memory_update"]["action"] == "added"
+        memories = service.get_all_memories("u2")
+        assert len(memories) == 1
+        assert "30" in memories[0].text
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

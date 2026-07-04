@@ -96,12 +96,16 @@ class AppConfig:
     PAHF_ENABLE_POST_CORRECTION: bool = os.getenv("PAHF_ENABLE_POST_CORRECTION", "true").lower() == "true"
     PAHF_LLM_MODEL: str = os.getenv("PAHF_LLM_MODEL", "")
 
+    # Bounds how long any single upstream LLM call may hang before failing, so a
+    # stalled request can't silently stretch a reply to minutes.
+    MODEL_REQUEST_TIMEOUT_SECONDS: float = float(os.getenv("MODEL_REQUEST_TIMEOUT_SECONDS", "20.0"))
+
     # Phase 3 tool calling
     TOOLS_ENABLED: bool = os.getenv("TOOLS_ENABLED", "true").lower() == "true"
     TOOLS_ALLOWLIST: list = os.getenv(
         "TOOLS_ALLOWLIST",
         "kb_search,create_ticket,get_ticket,list_tickets,"
-        "product_search,get_product_detail,check_inventory,get_order,list_orders,"
+        "browse_catalog,product_search,get_product_detail,check_inventory,get_order,list_orders,"
         "track_shipment,recommend_products,list_coupons,apply_coupon,initiate_return",
     ).split(",")
     TOOL_MAX_CALLS_PER_TURN: int = int(os.getenv("TOOL_MAX_CALLS_PER_TURN", "3"))
