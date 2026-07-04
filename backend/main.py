@@ -154,6 +154,7 @@ async def lifespan(app: FastAPI):
         event_bus=event_bus,
         chat_graph=chat_graph,
         memory_writeback_graph=memory_writeback_graph,
+        memory_writeback_mode=app_config.MEMORY_WRITEBACK_MODE,
         model_client=model_client,
         catalog_store=catalog_store,
         pahf_memory_service=pahf_memory_service,
@@ -899,7 +900,12 @@ async def chat(request: ChatRequest):
 
         # Invoke the (generation-only) chat graph off the event loop
         result = await asyncio.to_thread(chat_graph.invoke, state)
-        asyncio.create_task(_run_memory_writeback(result))
+        if app_config.MEMORY_WRITEBACK_MODE == "sync":
+            # Serverless (Vercel) kills background tasks once the response is
+            # sent, so there the writeback must complete before returning.
+            await _run_memory_writeback(result)
+        else:
+            asyncio.create_task(_run_memory_writeback(result))
 
         # Extract response
         response_text = result.get("response", "")

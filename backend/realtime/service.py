@@ -25,6 +25,7 @@ class ChatService:
         event_bus: EventBus,
         chat_graph,
         memory_writeback_graph=None,
+        memory_writeback_mode: str = "background",
         model_client=None,
         catalog_store=None,
         pahf_memory_service=None,
@@ -35,6 +36,7 @@ class ChatService:
         self.bus = event_bus
         self.chat_graph = chat_graph
         self.memory_writeback_graph = memory_writeback_graph
+        self.memory_writeback_mode = memory_writeback_mode
         self.model_client = model_client
         self.catalog = catalog_store
         self.pahf = pahf_memory_service
@@ -142,8 +144,13 @@ class ChatService:
 
         # PAHF post-action memory correction (extraction + add/update) doesn't
         # affect what we reply with, so it runs in the background instead of
-        # adding 2-3 more sequential LLM calls before the customer sees a reply.
-        asyncio.create_task(self._run_memory_writeback(result))
+        # adding 2-3 more sequential LLM calls before the customer sees a
+        # reply. On serverless the instance freezes once the response is sent,
+        # so "sync" mode completes it before returning instead.
+        if self.memory_writeback_mode == "sync":
+            await self._run_memory_writeback(result)
+        else:
+            asyncio.create_task(self._run_memory_writeback(result))
 
         response_text = result.get("response", "") or ""
         trace = {

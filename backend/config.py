@@ -100,6 +100,15 @@ class AppConfig:
     # stalled request can't silently stretch a reply to minutes.
     MODEL_REQUEST_TIMEOUT_SECONDS: float = float(os.getenv("MODEL_REQUEST_TIMEOUT_SECONDS", "20.0"))
 
+    # PAHF post-action memory writeback scheduling. "background" keeps it off
+    # the reply's critical path (fast, right for a long-lived server). On
+    # serverless (Vercel) the instance freezes as soon as the response is
+    # returned, killing background tasks -- memory would silently never be
+    # written -- so there we default to "sync" and pay the latency instead.
+    MEMORY_WRITEBACK_MODE: str = os.getenv(
+        "MEMORY_WRITEBACK_MODE", "sync" if os.getenv("VERCEL") else "background"
+    ).strip().lower()
+
     # Phase 3 tool calling
     TOOLS_ENABLED: bool = os.getenv("TOOLS_ENABLED", "true").lower() == "true"
     TOOLS_ALLOWLIST: list = os.getenv(
