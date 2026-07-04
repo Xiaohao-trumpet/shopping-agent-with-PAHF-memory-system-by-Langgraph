@@ -19,13 +19,23 @@ import {
   fetchProductAnalyticsDetail,
   requestProductAiInsight,
   generateProductReviews,
+  fetchMemoryCustomers,
+  fetchCustomerMemories,
+  deleteCustomerMemory,
   loginAdmin,
   logoutAdmin,
 } from "./shopApi";
-import type { AdminOverview, AdminProduct, AdminRating, AdminUser } from "./shopApi";
+import type {
+  AdminOverview,
+  AdminProduct,
+  AdminRating,
+  AdminUser,
+  MemoryCustomer,
+  CustomerMemoryEntry,
+} from "./shopApi";
 
 const TOKEN_KEY = "servicebot_admin_token";
-type AdminTab = "overview" | "analytics" | "conversations" | "products" | "feedback" | "users";
+type AdminTab = "overview" | "analytics" | "conversations" | "products" | "feedback" | "users" | "memory";
 
 interface AdminDashboardProps {
   onAuthExpired?: () => void;
@@ -254,6 +264,7 @@ export default function AdminDashboard({ onAuthExpired }: AdminDashboardProps) {
           ["conversations", "会话"],
           ["products", "商品"],
           ["feedback", "服务评价"],
+          ["memory", "记忆管理"],
           ["users", "账号"],
         ].map(([key, label]) => (
           <button
@@ -436,6 +447,8 @@ export default function AdminDashboard({ onAuthExpired }: AdminDashboardProps) {
         </section>
       )}
 
+      {activeTab === "memory" && <MemoryView token={token} />}
+
       {activeTab === "users" && (
         <section className="admin-view">
           <div className="admin-section-head">
@@ -457,6 +470,128 @@ export default function AdminDashboard({ onAuthExpired }: AdminDashboardProps) {
         </section>
       )}
     </main>
+  );
+}
+
+function MemoryView({ token }: { token: string }) {
+  const [customers, setCustomers] = useState<MemoryCustomer[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [memories, setMemories] = useState<CustomerMemoryEntry[]>([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [memLoading, setMemLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadCustomers = useCallback(() => {
+    setLoading(true);
+    setError("");
+    fetchMemoryCustomers(token)
+      .then(setCustomers)
+      .catch((err) => setError(err instanceof Error ? err.message : "加载失败"))
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  useEffect(() => {
+    loadCustomers();
+  }, [loadCustomers]);
+
+  const loadMemories = useCallback(
+    (personId: string) => {
+      setSelected(personId);
+      setMemLoading(true);
+      fetchCustomerMemories(token, personId)
+        .then(setMemories)
+        .catch(() => setMemories([]))
+        .finally(() => setMemLoading(false));
+    },
+    [token]
+  );
+
+  const handleDelete = async (memoryId: number) => {
+    if (!selected) return;
+    if (!window.confirm("确认删除这条记忆吗？此操作不可撤销。")) return;
+    await deleteCustomerMemory(token, selected, memoryId);
+    setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.person_id === selected ? { ...c, memory_count: Math.max(0, c.memory_count - 1) } : c
+      )
+    );
+  };
+
+  const filtered = customers.filter((c) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return c.person_id.toLowerCase().includes(q) || (c.profile?.name ?? "").toLowerCase().includes(q);
+  });
+
+  const totalMemories = customers.reduce((sum, c) => sum + c.memory_count, 0);
+
+  return (
+    <section className="admin-view">
+      <section className="admin-panel">
+        <div className="admin-section-head">
+          <h2>用户记忆隔离核查</h2>
+          <span>
+            {customers.length} 位用户 · {totalMemories} 条记忆
+          </span>
+        </div>
+        <p className="muted">
+          每位用户的长期记忆（PAHF）按 user_id 严格分桶存储，互不混用；此处可按用户核对、清理误存的记忆。
+        </p>
+        <input
+          className="mem-search"
+          placeholder="按用户 ID 或姓名搜索…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        {error && <div className="admin-alert">{error}</div>}
+        <div className="mem-layout">
+          <div className="mem-list">
+            {loading && <p className="muted">加载中…</p>}
+            {!loading && filtered.length === 0 && <p className="admin-empty">暂无记忆数据</p>}
+            {filtered.map((c) => (
+              <button
+                key={c.person_id}
+                className={`mem-row ${selected === c.person_id ? "active" : ""}`}
+                onClick={() => loadMemories(c.person_id)}
+              >
+                <span className="mem-row-id">
+                  {c.person_id}
+                  {c.profile && <small>{c.profile.name} · {c.profile.tier}</small>}
+                </span>
+                <b>{c.memory_count}</b>
+              </button>
+            ))}
+          </div>
+          <div className="mem-detail">
+            {!selected && <p className="admin-empty">选择左侧用户查看其记忆明细</p>}
+            {selected && (
+              <>
+                <div className="admin-section-head">
+                  <h3>{selected}</h3>
+                  <button onClick={() => loadMemories(selected)} disabled={memLoading}>
+                    刷新
+                  </button>
+                </div>
+                {memLoading && <p className="muted">加载中…</p>}
+                {!memLoading && memories.length === 0 && <p className="admin-empty">该用户暂无记忆</p>}
+                <ul className="mem-item-list">
+                  {memories.map((m) => (
+                    <li key={m.id}>
+                      <span>{m.text}</span>
+                      <button className="mem-del" onClick={() => handleDelete(m.id)}>
+                        删除
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+    </section>
   );
 }
 

@@ -197,69 +197,87 @@ export async function createReturnRequest(payload: {
 }
 
 // ------------------------------------------------------------- agent console
-export async function fetchAgentConversations(status = "all"): Promise<Conversation[]> {
+// All of these require an admin session token -- the agent console exposes
+// customer chat content and PAHF memory dumps, so it's gated the same as
+// the rest of the backoffice.
+export async function fetchAgentConversations(token: string, status = "all"): Promise<Conversation[]> {
   const res = await request<{ conversations: Conversation[] }>(
-    `/api/v1/agent/conversations?status=${encodeURIComponent(status)}`
+    `/api/v1/agent/conversations?status=${encodeURIComponent(status)}`,
+    { headers: authHeaders(token) }
   );
   return res.conversations ?? [];
 }
 
-export async function fetchAgentContext(conversationId: string): Promise<AgentContext> {
-  return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}`);
+export async function fetchAgentContext(token: string, conversationId: string): Promise<AgentContext> {
+  return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}`, {
+    headers: authHeaders(token),
+  });
 }
 
 export async function claimConversation(
+  token: string,
   conversationId: string,
   agentId: string,
   agentName: string
 ): Promise<Conversation> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/claim`, {
     method: "POST",
+    headers: authHeaders(token),
     body: JSON.stringify({ agent_id: agentId, agent_name: agentName }),
   });
 }
 
 export async function sendAgentMessage(
+  token: string,
   conversationId: string,
   agentId: string,
   content: string
 ): Promise<ConvMessage> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/message`, {
     method: "POST",
+    headers: authHeaders(token),
     body: JSON.stringify({ agent_id: agentId, content }),
   });
 }
 
-export async function releaseConversation(conversationId: string, agentId: string): Promise<Conversation> {
+export async function releaseConversation(
+  token: string,
+  conversationId: string,
+  agentId: string
+): Promise<Conversation> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/release`, {
     method: "POST",
+    headers: authHeaders(token),
     body: JSON.stringify({ agent_id: agentId }),
   });
 }
 
 export async function resolveConversation(
+  token: string,
   conversationId: string,
   agentId: string,
   csat?: number
 ): Promise<Conversation> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/resolve`, {
     method: "POST",
+    headers: authHeaders(token),
     body: JSON.stringify({ agent_id: agentId, csat }),
   });
 }
 
-export async function suggestReply(conversationId: string): Promise<string> {
+export async function suggestReply(token: string, conversationId: string): Promise<string> {
   const res = await request<{ suggestion: string }>(
-    `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/suggest`
+    `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/suggest`,
+    { headers: authHeaders(token) }
   );
   return res.suggestion ?? "";
 }
 
-export async function fetchAgentStats(): Promise<{
+export async function fetchAgentStats(token: string): Promise<{
   counts: Record<string, number>;
   online_agents: number;
 }> {
-  return request("/api/v1/agent/stats");
+  return request("/api/v1/agent/stats", { headers: authHeaders(token) });
 }
 
 // ----------------------------------------------------------------- feedback
@@ -529,13 +547,47 @@ export async function generateProductReviews(
   });
 }
 
+// ------------------------------------------------------- admin memory management
+export interface MemoryCustomer {
+  person_id: string;
+  memory_count: number;
+  profile: CustomerUser | null;
+}
+
+export interface CustomerMemoryEntry {
+  id: number;
+  text: string;
+}
+
+export async function fetchMemoryCustomers(token: string): Promise<MemoryCustomer[]> {
+  const res = await request<{ customers: MemoryCustomer[] }>("/api/v1/admin/memory/customers", {
+    headers: authHeaders(token),
+  });
+  return res.customers ?? [];
+}
+
+export async function fetchCustomerMemories(token: string, personId: string): Promise<CustomerMemoryEntry[]> {
+  const res = await request<{ memories: CustomerMemoryEntry[] }>(
+    `/api/v1/admin/memory/customers/${encodeURIComponent(personId)}/memories`,
+    { headers: authHeaders(token) }
+  );
+  return res.memories ?? [];
+}
+
+export async function deleteCustomerMemory(token: string, personId: string, memoryId: number): Promise<void> {
+  await request(`/api/v1/admin/memory/customers/${encodeURIComponent(personId)}/memories/${memoryId}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+}
+
 // ------------------------------------------------------------------- sockets
 export function customerSocketUrl(customerId: string): string {
   return `${WS_BASE}/ws/customer/${encodeURIComponent(customerId)}`;
 }
-export function agentSocketUrl(agentId: string): string {
-  return `${WS_BASE}/ws/agent/${encodeURIComponent(agentId)}`;
+export function agentSocketUrl(agentId: string, token: string): string {
+  return `${WS_BASE}/ws/agent/${encodeURIComponent(agentId)}?token=${encodeURIComponent(token)}`;
 }
-export function conversationSocketUrl(conversationId: string): string {
-  return `${WS_BASE}/ws/conversation/${encodeURIComponent(conversationId)}`;
+export function conversationSocketUrl(conversationId: string, token: string): string {
+  return `${WS_BASE}/ws/conversation/${encodeURIComponent(conversationId)}?token=${encodeURIComponent(token)}`;
 }

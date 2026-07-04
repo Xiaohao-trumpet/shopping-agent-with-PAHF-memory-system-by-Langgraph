@@ -1611,6 +1611,102 @@ button.wide { width: 100%; margin-top: 12px; }
 .an-review-item .pr-item-stars { flex: none; }
 .an-review-text { color: #3a4557; }
 
+/* ----------------------------------------------- admin memory management */
+.mem-search {
+  width: 100%;
+  margin: 4px 0 14px;
+  padding: 9px 12px;
+  border: 1px solid #dfe6f1;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.mem-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.mem-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fbfcff;
+  border: 1px solid #eef1f6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mem-row.active {
+  border-color: #2f6feb;
+  background: #eef3ff;
+}
+.mem-row-id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #172033;
+  font-weight: 700;
+  word-break: break-all;
+}
+.mem-row-id small {
+  color: #728197;
+  font-weight: 500;
+}
+.mem-row b {
+  color: #2f6feb;
+  font-size: 16px;
+}
+.mem-detail {
+  border: 1px solid #eef1f6;
+  border-radius: 8px;
+  padding: 14px;
+  min-height: 200px;
+}
+.mem-detail h3 {
+  margin: 0;
+  font-size: 15px;
+  word-break: break-all;
+}
+.mem-item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mem-item-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fbfcff;
+  border: 1px solid #f4f6fa;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #3a4557;
+}
+.mem-del {
+  flex: none;
+  border: 1px solid #f3c4c4;
+  color: #c0392b;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 @media (max-width: 1100px) {
   .admin-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .admin-layout.two { grid-template-columns: 1fr; }
@@ -1620,6 +1716,7 @@ button.wide { width: 100%; margin-top: 12px; }
   .an-rank-row { grid-template-columns: 24px minmax(120px, 1fr) 40px auto; }
   .an-rank-bar { display: none; }
   .an-drawer-stats { grid-template-columns: 1fr; }
+  .mem-layout { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {

@@ -45,11 +45,13 @@ function timeago(ts: number): string {
 }
 
 interface AgentConsoleProps {
+  adminToken: string;
   initialAgentId?: string;
   initialAgentName?: string;
 }
 
 export default function AgentConsole({
+  adminToken,
   initialAgentId = "agent-1",
   initialAgentName = "客服小美",
 }: AgentConsoleProps) {
@@ -75,15 +77,18 @@ export default function AgentConsole({
   }, [initialAgentId, initialAgentName]);
 
   const refreshList = useCallback(() => {
-    fetchAgentConversations(filter).then(setConversations).catch(() => setConversations([]));
-    fetchAgentStats().then(setStats).catch(() => undefined);
+    fetchAgentConversations(adminToken, filter).then(setConversations).catch(() => setConversations([]));
+    fetchAgentStats(adminToken).then(setStats).catch(() => undefined);
     fetchFeedbackSummary().then(setFb).catch(() => undefined);
-  }, [filter]);
+  }, [adminToken, filter]);
 
-  const refreshContext = useCallback((cid: string) => {
-    if (!cid) return;
-    fetchAgentContext(cid).then(setContext).catch(() => setContext(null));
-  }, []);
+  const refreshContext = useCallback(
+    (cid: string) => {
+      if (!cid) return;
+      fetchAgentContext(adminToken, cid).then(setContext).catch(() => setContext(null));
+    },
+    [adminToken]
+  );
 
   useEffect(() => {
     refreshList();
@@ -92,7 +97,7 @@ export default function AgentConsole({
   // Agent notification socket: presence + queue/escalation events -> refresh.
   useEffect(() => {
     if (!agentId) return;
-    const ws = new WebSocket(agentSocketUrl(agentId));
+    const ws = new WebSocket(agentSocketUrl(agentId, adminToken));
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data) as BusEvent;
       refreshList();
@@ -110,13 +115,13 @@ export default function AgentConsole({
       clearInterval(ping);
       ws.close();
     };
-  }, [agentId, refreshList, refreshContext]);
+  }, [agentId, adminToken, refreshList, refreshContext]);
 
   // Live feed of the open conversation.
   useEffect(() => {
     if (!selectedId) return;
     refreshContext(selectedId);
-    const ws = new WebSocket(conversationSocketUrl(selectedId));
+    const ws = new WebSocket(conversationSocketUrl(selectedId, adminToken));
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data) as BusEvent;
       if (data.type === "message") {
@@ -134,7 +139,7 @@ export default function AgentConsole({
       }
     };
     return () => ws.close();
-  }, [selectedId, refreshContext, refreshList]);
+  }, [selectedId, adminToken, refreshContext, refreshList]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
@@ -143,30 +148,30 @@ export default function AgentConsole({
   const conv = context?.conversation;
   const doClaim = async () => {
     if (!selectedId) return;
-    await claimConversation(selectedId, agentId, agentName);
+    await claimConversation(adminToken, selectedId, agentId, agentName);
     refreshContext(selectedId);
     refreshList();
   };
   const doSend = async () => {
     const text = draft.trim();
     if (!text || !selectedId) return;
-    await sendAgentMessage(selectedId, agentId, text);
+    await sendAgentMessage(adminToken, selectedId, agentId, text);
     setDraft("");
   };
   const doSuggest = async () => {
     if (!selectedId) return;
-    const s = await suggestReply(selectedId);
+    const s = await suggestReply(adminToken, selectedId);
     if (s) setDraft(s);
   };
   const doRelease = async () => {
     if (!selectedId) return;
-    await releaseConversation(selectedId, agentId);
+    await releaseConversation(adminToken, selectedId, agentId);
     refreshContext(selectedId);
     refreshList();
   };
   const doResolve = async () => {
     if (!selectedId) return;
-    await resolveConversation(selectedId, agentId);
+    await resolveConversation(adminToken, selectedId, agentId);
     refreshContext(selectedId);
     refreshList();
   };

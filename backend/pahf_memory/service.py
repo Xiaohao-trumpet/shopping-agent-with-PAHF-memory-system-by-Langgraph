@@ -45,6 +45,9 @@ except ModuleNotFoundError:
         def get_all_memories(self) -> List[Tuple[int, str]]:
             raise NotImplementedError
 
+        def delete_memory(self, memory_id: int) -> None:
+            raise NotImplementedError
+
         def close(self) -> None:
             raise NotImplementedError
 
@@ -163,6 +166,13 @@ except ModuleNotFoundError:
             )
             return [(int(memory_id), text) for memory_id, text in self.cursor.fetchall()]
 
+        def delete_memory(self, memory_id: int) -> None:
+            self.cursor.execute(
+                "DELETE FROM docs WHERE id = ? AND person_id = ?",
+                (memory_id, self.person_id),
+            )
+            self.conn.commit()
+
         def close(self) -> None:
             self.conn.close()
 
@@ -192,11 +202,17 @@ class PahfMemorySearchHit:
 
 
 class PahfLLMClient:
-    """Minimal OpenAI-compatible LLM client mirroring PAHF retry behavior."""
+    """Minimal OpenAI-compatible LLM client mirroring PAHF retry behavior.
 
-    def __init__(self, model: str, base_url: str, api_key: str):
+    Retries live entirely in this class's own backoff loop below, so the SDK
+    client itself is built with ``max_retries=0`` -- otherwise a persistent
+    failure would retry ``max_attempts`` times here, each already retried
+    internally by the SDK, compounding into a very long stall.
+    """
+
+    def __init__(self, model: str, base_url: str, api_key: str, timeout: float = 20.0):
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
 
     def generate(
         self,
@@ -204,7 +220,7 @@ class PahfLLMClient:
         temperature: float = 0.0,
         max_tokens: int = 256,
     ) -> str:
-        max_attempts = 5
+        max_attempts = 3
         for i in range(max_attempts):
             try:
                 response = self.client.chat.completions.create(
@@ -219,9 +235,9 @@ class PahfLLMClient:
                     raise
                 error_text = str(exc).lower()
                 if "rate" in error_text or "limit" in error_text:
-                    time.sleep(5 * (i + 1))
+                    time.sleep(min(5 * (i + 1), 8))
                 else:
-                    time.sleep(2 * (i + 1))
+                    time.sleep(min(2 * (i + 1), 4))
         raise RuntimeError("PAHF LLM generation failed unexpectedly")
 
 
@@ -403,6 +419,47 @@ class PAHFMemoryService:
 
     def get_all_memories(self, person_id: str) -> List[PahfMemoryItem]:
         return self._all_items(person_id=person_id)
+
+    def list_person_ids_with_counts(self) -> List[Dict[str, Any]]:
+        """List every person_id with at least one stored memory, plus counts.
+
+        Backs the admin memory-management view, so it needs to see everyone
+        with data -- not just banks already loaded in ``self._banks`` this
+        process (a person may have memories from before the last restart).
+        For the sqlite backend this reads the shared db file directly; for
+        faiss (which has no cheap way to inspect un-loaded index files) it
+        falls back to whatever banks are currently loaded in-process.
+        """
+        if self.backend == "sqlite":
+            conn = sqlite3.connect(self.sqlite_db_path)
+            try:
+                # The "docs" table is created lazily by the first memory bank
+                # instance, so a fresh install with zero memories written yet
+                # has no table at all.
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'docs'"
+                ).fetchone()
+                if not exists:
+                    return []
+                rows = conn.execute(
+                    "SELECT person_id, COUNT(*) AS c FROM docs GROUP BY person_id ORDER BY c DESC, person_id ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+            return [{"person_id": r[0], "memory_count": int(r[1])} for r in rows]
+
+        with self._lock:
+            person_ids = sorted(self._banks.keys())
+        return [
+            {"person_id": pid, "memory_count": len(self._all_items(pid))}
+            for pid in person_ids
+        ]
+
+    def delete_memory(self, person_id: str, memory_id: int) -> bool:
+        if self.get_memory(person_id, memory_id) is None:
+            return False
+        self._bank(person_id).delete_memory(memory_id)
+        return True
 
     def get_memory(self, person_id: str, memory_id: int) -> Optional[PahfMemoryItem]:
         text = self._bank(person_id).get_memory(memory_id)
@@ -623,6 +680,7 @@ def build_pahf_memory_service(app_config: AppConfig, model_config: ModelConfig) 
         model=app_config.PAHF_LLM_MODEL or model_config.model_name,
         base_url=model_config.base_url,
         api_key=model_config.api_key,
+        timeout=app_config.MODEL_REQUEST_TIMEOUT_SECONDS,
     )
     return PAHFMemoryService(
         backend=app_config.PAHF_BACKEND,

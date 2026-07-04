@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from .runtime import RT
 from .feedback_store import SUGGESTED_TAGS
 from ..analytics import REVIEW_TAGS
+from ..auth_deps import admin_session_for_token, require_admin
 
 router = APIRouter()
 
@@ -317,13 +318,15 @@ async def feedback_ratings(limit: int = 200):
 
 
 # ------------------------------------------------------------ agent console
+# All routes below expose customer chat content and full PAHF memory dumps,
+# so they require the same admin session as the backoffice (/api/v1/admin/*).
 @router.get("/api/v1/agent/conversations")
-async def agent_conversations(status: str = "all", limit: int = 50):
+async def agent_conversations(status: str = "all", limit: int = 50, _admin: dict = Depends(require_admin)):
     return {"conversations": RT.conversation_store.list_conversations(status=status, limit=limit)}
 
 
 @router.get("/api/v1/agent/conversations/{conversation_id}")
-async def agent_conversation_detail(conversation_id: str):
+async def agent_conversation_detail(conversation_id: str, _admin: dict = Depends(require_admin)):
     ctx = RT.chat_service.get_context(conversation_id)
     if not ctx:
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -331,32 +334,32 @@ async def agent_conversation_detail(conversation_id: str):
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/claim")
-async def agent_claim(conversation_id: str, req: ClaimRequest):
+async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = Depends(require_admin)):
     return await RT.chat_service.claim(conversation_id, req.agent_id, req.agent_name)
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/message")
-async def agent_message(conversation_id: str, req: AgentMessageRequest):
+async def agent_message(conversation_id: str, req: AgentMessageRequest, _admin: dict = Depends(require_admin)):
     return await RT.chat_service.agent_send(conversation_id, req.agent_id, req.content)
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/release")
-async def agent_release(conversation_id: str, req: AgentOpRequest):
+async def agent_release(conversation_id: str, req: AgentOpRequest, _admin: dict = Depends(require_admin)):
     return await RT.chat_service.release(conversation_id, req.agent_id)
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/resolve")
-async def agent_resolve(conversation_id: str, req: AgentOpRequest):
+async def agent_resolve(conversation_id: str, req: AgentOpRequest, _admin: dict = Depends(require_admin)):
     return await RT.chat_service.resolve(conversation_id, req.agent_id, csat=req.csat)
 
 
 @router.get("/api/v1/agent/conversations/{conversation_id}/suggest")
-async def agent_suggest(conversation_id: str):
+async def agent_suggest(conversation_id: str, _admin: dict = Depends(require_admin)):
     return {"suggestion": await RT.chat_service.suggest_reply(conversation_id)}
 
 
 @router.get("/api/v1/agent/stats")
-async def agent_stats():
+async def agent_stats(_admin: dict = Depends(require_admin)):
     return {
         "counts": RT.conversation_store.counts_by_status(),
         "online_agents": RT.chat_service.online_agent_count(),
@@ -404,7 +407,10 @@ async def ws_customer(ws: WebSocket, customer_id: str):
 
 
 @router.websocket("/ws/agent/{agent_id}")
-async def ws_agent(ws: WebSocket, agent_id: str):
+async def ws_agent(ws: WebSocket, agent_id: str, token: Optional[str] = None):
+    if admin_session_for_token(token) is None:
+        await ws.close(code=4401)
+        return
     await ws.accept()
     svc = RT.chat_service
     q = RT.event_bus.register("agents")
@@ -428,9 +434,12 @@ async def ws_agent(ws: WebSocket, agent_id: str):
 
 
 @router.websocket("/ws/conversation/{conversation_id}")
-async def ws_conversation(ws: WebSocket, conversation_id: str):
+async def ws_conversation(ws: WebSocket, conversation_id: str, token: Optional[str] = None):
     """Read-only live feed of one conversation (used by the agent console while
     a chat is open)."""
+    if admin_session_for_token(token) is None:
+        await ws.close(code=4401)
+        return
     await ws.accept()
     topic = f"conv:{conversation_id}"
     q = RT.event_bus.register(topic)

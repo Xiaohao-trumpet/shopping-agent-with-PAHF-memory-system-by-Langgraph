@@ -145,6 +145,11 @@ class MemoryBank(ABC):
         pass
 
     @abstractmethod
+    def delete_memory(self, memory_id: int) -> None:
+        """Delete a single memory by ID for this person"""
+        pass
+
+    @abstractmethod
     def close(self) -> None:
         """Close/cleanup memory bank resources"""
         pass
@@ -387,6 +392,14 @@ class SQLiteMemoryBank(MemoryBank):
         )
         result = self.cursor.fetchone()
         return result[0] if result else None
+
+    def delete_memory(self, memory_id: int) -> None:
+        """Delete a single memory by ID for this person"""
+        self.cursor.execute(
+            "DELETE FROM docs WHERE id = ? AND person_id = ?",
+            (memory_id, self.person_id),
+        )
+        self.conn.commit()
 
     def close(self):
         """Close database connection"""
@@ -675,6 +688,38 @@ class FAISSMemoryBank(MemoryBank):
             return None
         index = self.id_to_index[memory_id]
         return self.documents[index]
+
+    def delete_memory(self, memory_id: int) -> None:
+        """Delete a single memory by ID and rebuild the FAISS index"""
+        if memory_id not in self.id_to_index:
+            return
+
+        index = self.id_to_index[memory_id]
+        del self.documents[index]
+        del self.person_ids[index]
+        del self.document_embeddings[index]
+
+        # Reassign contiguous list indices to the remaining documents, in
+        # their original order, then rebuild the id<->index maps.
+        remaining_ids = [
+            doc_id
+            for doc_id, idx in sorted(self.id_to_index.items(), key=lambda kv: kv[1])
+            if doc_id != memory_id
+        ]
+        self.id_to_index = {doc_id: i for i, doc_id in enumerate(remaining_ids)}
+        self.index_to_id = {i: doc_id for doc_id, i in self.id_to_index.items()}
+
+        if self.document_embeddings:
+            embeddings_array = np.array(self.document_embeddings).astype("float32")
+            if self.use_dot_product:
+                faiss.normalize_L2(embeddings_array)
+            self._initialize_index(self.dimension)
+            self.index.add(embeddings_array)
+        else:
+            self.index = None
+
+        if hasattr(self, "persistence_path") and self.persistence_path:
+            self.save_index(self.persistence_path)
 
     def close(self):
         """Close/cleanup memory bank (for compatibility with SQLite)"""

@@ -17,6 +17,7 @@ class _Runtime:
     feedback_store: Optional[Any] = None
     review_store: Optional[Any] = None
     analytics_service: Optional[Any] = None
+    admin_store: Optional[Any] = None
 
 
 RT = _Runtime()

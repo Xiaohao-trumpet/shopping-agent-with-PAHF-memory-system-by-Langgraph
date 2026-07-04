@@ -123,6 +123,7 @@ export default function Root() {
         )}
         {view === "console" && (
           <AgentConsole
+            adminToken={session.adminToken || window.localStorage.getItem(ADMIN_TOKEN_KEY) || ""}
             initialAgentId={session.agentId ?? "agent-1"}
             initialAgentName={session.agentName ?? session.displayName}
           />

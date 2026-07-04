@@ -116,3 +116,32 @@ def test_pahf_memory_api_crud_and_search(client_with_pahf: TestClient):
     )
     assert similar_res.status_code == 200
     assert similar_res.json() is not None
+
+
+def test_memory_isolated_per_user_and_deletable():
+    """Backs the admin memory-management view: memories are strictly bucketed
+    by person_id (never mixed across users) and a single memory can be deleted
+    without touching anyone else's data."""
+    tmp = _tmp_dir()
+    try:
+        service = build_service(tmp)
+        service.add_memory("userA", "A likes shoe size 42")
+        service.add_memory("userA", "A prefers blue")
+        service.add_memory("userB", "B likes hats")
+
+        counts = {row["person_id"]: row["memory_count"] for row in service.list_person_ids_with_counts()}
+        assert counts == {"userA": 2, "userB": 1}
+
+        a_memories = service.get_all_memories("userA")
+        assert len(a_memories) == 2
+
+        # Deleting one of A's memories must not touch B's, and deleting a
+        # memory that belongs to a different person must fail (not silently
+        # delete across the isolation boundary).
+        assert service.delete_memory("userB", a_memories[0].id) is False
+        assert service.delete_memory("userA", a_memories[0].id) is True
+        assert [m.text for m in service.get_all_memories("userA")] == [a_memories[1].text]
+        assert [m.text for m in service.get_all_memories("userB")] == ["B likes hats"]
+        assert service.delete_memory("userA", 999999) is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

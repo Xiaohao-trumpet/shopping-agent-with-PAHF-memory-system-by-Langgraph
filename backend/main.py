@@ -3,13 +3,14 @@ FastAPI application entrypoint.
 Provides HTTP API endpoints for the conversational AI system.
 """
 
+import asyncio
 import time
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 import json
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
@@ -17,8 +18,9 @@ import logging
 
 from .config import get_model_config, get_app_config
 from .admin_store import AdminStore
+from .auth_deps import require_admin, require_admin_token
 from .models.universal_chat import UniversalChat
-from .agents.graph import create_chat_graph
+from .agents.graph import create_generation_graph, create_memory_writeback_graph
 from .session_store import get_session_store
 from .pahf_memory import build_pahf_memory_service
 from .prompts.prompt_factory import get_prompt_factory
@@ -55,6 +57,7 @@ logger = get_logger(__name__)
 # Global instances (initialized in lifespan)
 model_client: Optional[UniversalChat] = None
 chat_graph = None
+memory_writeback_graph = None
 session_store = None
 pahf_memory_service = None
 tool_registry = None
@@ -70,7 +73,7 @@ MAX_MODEL_OUTPUT_TOKENS = 4096
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global model_client, chat_graph, session_store, pahf_memory_service
+    global model_client, chat_graph, memory_writeback_graph, session_store, pahf_memory_service
     global tool_registry, tool_planner, tool_executor, prompt_builder, admin_store
     
     logger.info("Starting application...")
@@ -86,7 +89,8 @@ async def lifespan(app: FastAPI):
         api_key=model_config.api_key,
         system_prompt=system_prompt,
         default_temperature=model_config.default_temperature,
-        default_max_tokens=model_config.default_max_tokens
+        default_max_tokens=model_config.default_max_tokens,
+        request_timeout_seconds=app_config.MODEL_REQUEST_TIMEOUT_SECONDS,
     )
     logger.info(f"Initialized model client: {model_config.model_name}")
     
@@ -125,8 +129,11 @@ async def lifespan(app: FastAPI):
     prompt_builder = PromptBuilder(prompt_factory=prompt_factory)
     logger.info("Initialized tool subsystem")
 
-    # Initialize chat graph with PAHF memory hooks
-    chat_graph = create_chat_graph(
+    # Initialize chat graph with PAHF memory hooks. Generation is split from
+    # memory writeback so PAHF's post-action correction (extraction + add/update,
+    # 2-3 extra LLM calls) never blocks the reply -- it runs afterwards as a
+    # background task (see _run_memory_writeback).
+    chat_graph = create_generation_graph(
         model_client=model_client,
         pahf_memory_service=pahf_memory_service,
         tool_planner=tool_planner,
@@ -136,6 +143,7 @@ async def lifespan(app: FastAPI):
         prompt_scene=model_config.system_prompt_scene,
         tools_enabled=app_config.TOOLS_ENABLED,
     )
+    memory_writeback_graph = create_memory_writeback_graph(pahf_memory_service)
     logger.info("Initialized chat graph")
 
     # Initialize realtime + human-in-the-loop subsystem (Phase B & C)
@@ -145,6 +153,7 @@ async def lifespan(app: FastAPI):
         conversations=conversation_store,
         event_bus=event_bus,
         chat_graph=chat_graph,
+        memory_writeback_graph=memory_writeback_graph,
         model_client=model_client,
         catalog_store=catalog_store,
         pahf_memory_service=pahf_memory_service,
@@ -165,6 +174,7 @@ async def lifespan(app: FastAPI):
     RT.catalog_store = catalog_store
     RT.conversation_store = conversation_store
     RT.feedback_store = feedback_store
+    RT.admin_store = admin_store
     logger.info("Initialized realtime + HITL subsystem")
     logger.info("Initialized admin auth subsystem")
 
@@ -453,27 +463,15 @@ def _get_admin_store() -> AdminStore:
             session_ttl_seconds=app_config.ADMIN_SESSION_TTL_SECONDS,
             session_secret=app_config.ADMIN_SESSION_SECRET,
         )
+        RT.admin_store = admin_store
     return admin_store
 
 
-def _extract_bearer_token(authorization: Optional[str]) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(status_code=401, detail="Invalid Authorization header")
-    return token.strip()
-
-
-def _require_admin_token(authorization: Optional[str] = Header(default=None)) -> str:
-    return _extract_bearer_token(authorization)
-
-
-def _require_admin(token: str = Depends(_require_admin_token)) -> dict:
-    session = _get_admin_store().get_session(token)
-    if session is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired admin session")
-    return session["user"]
+# Admin bearer-token auth is defined in .auth_deps (not here) so the realtime
+# router -- mounted below, imported before this module finishes loading --
+# can gate its agent-console routes with the exact same dependency.
+_require_admin_token = require_admin_token
+_require_admin = require_admin
 
 
 def _require_backoffice_runtime() -> None:
@@ -496,6 +494,12 @@ def _require_analytics():
     if RT.analytics_service is None:
         raise HTTPException(status_code=503, detail="Analytics runtime is not ready")
     return RT.analytics_service
+
+
+def _require_pahf_memory():
+    if pahf_memory_service is None:
+        raise HTTPException(status_code=503, detail="Memory runtime is not ready")
+    return pahf_memory_service
 
 
 # Endpoints
@@ -709,6 +713,38 @@ async def admin_analytics_generate_reviews(
         raise HTTPException(status_code=404, detail="product not found")
 
 
+# --------------------------------------------------------- memory management
+@app.get("/api/v1/admin/memory/customers")
+async def admin_memory_customers(current_admin: dict = Depends(_require_admin)):
+    """Every person_id with PAHF memories, with a count and (when the id
+    matches a known storefront customer) their profile -- lets the backoffice
+    verify memory is kept strictly per-user rather than shared/mixed."""
+    service = _require_pahf_memory()
+    persons = service.list_person_ids_with_counts()
+    catalog = RT.catalog_store
+    for entry in persons:
+        entry["profile"] = catalog.get_customer(entry["person_id"]) if catalog is not None else None
+    return {"customers": persons}
+
+
+@app.get("/api/v1/admin/memory/customers/{person_id}/memories")
+async def admin_memory_list(person_id: str, current_admin: dict = Depends(_require_admin)):
+    service = _require_pahf_memory()
+    items = service.get_all_memories(person_id)
+    return {"person_id": person_id, "memories": [{"id": item.id, "text": item.text} for item in items]}
+
+
+@app.delete("/api/v1/admin/memory/customers/{person_id}/memories/{memory_id}")
+async def admin_memory_delete(
+    person_id: str, memory_id: int, current_admin: dict = Depends(_require_admin)
+):
+    service = _require_pahf_memory()
+    deleted = service.delete_memory(person_id, memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return {"deleted": True, "memory_id": memory_id}
+
+
 @app.post("/api/v1/chat/completions")
 @app.post("/v1/chat/completions")
 async def chat_completions(request: OpenAIChatCompletionRequest):
@@ -821,22 +857,36 @@ async def chat_completions(request: OpenAIChatCompletionRequest):
     }
 
 
+async def _run_memory_writeback(state: dict) -> None:
+    """Fire-and-forget PAHF post-action correction (extraction + add/update).
+
+    Runs after the reply has already been returned to the caller, so a slow
+    or failing memory writeback never delays or breaks the chat response.
+    """
+    if memory_writeback_graph is None:
+        return
+    try:
+        await asyncio.to_thread(memory_writeback_graph.invoke, state)
+    except Exception as exc:
+        logger.error(f"Memory writeback failed: {exc}", exc_info=True)
+
+
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
     Synchronous chat endpoint.
-    
+
     Processes a user message and returns the assistant's response.
     """
     start_time = time.time()
-    
+
     try:
         # Rate limiting
         check_rate_limit(request.user_id)
-        
+
         # Create or get session
         session = session_store.create_session(request.user_id)
-        
+
         # Prepare state for graph
         state = {
             "user_id": request.user_id,
@@ -846,18 +896,21 @@ async def chat(request: ChatRequest):
             "max_tokens": _effective_max_tokens(request.max_tokens),
             "session": session,
         }
-        
-        # Invoke the chat graph
-        result = chat_graph.invoke(state)
-        
+
+        # Invoke the (generation-only) chat graph off the event loop
+        result = await asyncio.to_thread(chat_graph.invoke, state)
+        asyncio.create_task(_run_memory_writeback(result))
+
         # Extract response
         response_text = result.get("response", "")
         trace_payload = {
             "retrieved_memories": result.get("retrieved_memories", []),
             "pahf_context_text": result.get("pahf_context_text", ""),
             "clarification_question": result.get("clarification_question"),
-            "memory_candidate": result.get("memory_candidate"),
-            "memory_update": result.get("memory_update"),
+            # Memory extraction/update now run in the background after this
+            # response is returned (see _run_memory_writeback), so they are
+            # not available synchronously here.
+            "memory_writeback": "scheduled" if memory_writeback_graph is not None else "disabled",
             "intent": result.get("intent"),
             "tool_plan": result.get("tool_plan", []),
             "tool_results": result.get("tool_results", []),
