@@ -41,3 +41,24 @@ def test_logout_invalidates_session(tmp_path):
     store.logout(token)
 
     assert store.get_session(token) is None
+
+
+def test_signed_session_survives_new_store_instance(tmp_path):
+    first_store = AdminStore(
+        db_path=str(tmp_path / "first.db"),
+        default_username="admin",
+        default_password="secret",
+        session_secret="stable-secret",
+    )
+    session = first_store.authenticate("admin", "secret")
+
+    second_store = AdminStore(
+        db_path=str(tmp_path / "second.db"),
+        default_username="admin",
+        default_password="secret",
+        session_secret="stable-secret",
+    )
+
+    restored = second_store.get_session(session["access_token"])
+    assert restored is not None
+    assert restored["user"]["username"] == "admin"

@@ -156,6 +156,7 @@ class AppConfig:
     ADMIN_DEFAULT_USERNAME: str = os.getenv("ADMIN_DEFAULT_USERNAME", "admin").strip()
     ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@2026!").strip()
     ADMIN_SESSION_TTL_SECONDS: int = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "86400"))
+    ADMIN_SESSION_SECRET: str = os.getenv("ADMIN_SESSION_SECRET", os.getenv("API_KEY", "")).strip()
 
 
 def get_model_config() -> ModelConfig:

@@ -27,6 +27,10 @@ import type { AdminOverview, AdminProduct, AdminRating, AdminUser } from "./shop
 const TOKEN_KEY = "servicebot_admin_token";
 type AdminTab = "overview" | "analytics" | "conversations" | "products" | "feedback" | "users";
 
+interface AdminDashboardProps {
+  onAuthExpired?: () => void;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   bot: "AI 接待",
   queued: "待人工",
@@ -98,7 +102,7 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`admin-status status-${status}`}>{STATUS_LABEL[status] ?? status}</span>;
 }
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ onAuthExpired }: AdminDashboardProps) {
   const [token, setToken] = useState(() =>
     typeof window === "undefined" ? "" : window.localStorage.getItem(TOKEN_KEY) ?? ""
   );
@@ -136,16 +140,21 @@ export default function AdminDashboard() {
         setUsers(nextUsers);
       } catch (err) {
         const message = err instanceof Error ? err.message : "后台数据加载失败";
-        setError(message);
         if (message.includes("401")) {
           window.localStorage.removeItem(TOKEN_KEY);
           setToken("");
+          setUser(null);
+          setOverview(null);
+          setError("登录状态已过期，请重新登录。");
+          onAuthExpired?.();
+          return;
         }
+        setError(message);
       } finally {
         setLoading(false);
       }
     },
-    [statusFilter]
+    [onAuthExpired, statusFilter]
   );
 
   useEffect(() => {
@@ -172,7 +181,8 @@ export default function AdminDashboard() {
       setToken(session.access_token);
       setUser(session.user);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "登录失败");
+      const message = err instanceof Error ? err.message : "登录失败";
+      setError(message.includes("401") ? "管理员账号或密码不正确，请重新输入。" : message);
     } finally {
       setLoading(false);
     }

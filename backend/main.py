@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
             default_username=app_config.ADMIN_DEFAULT_USERNAME,
             default_password=app_config.ADMIN_DEFAULT_PASSWORD,
             session_ttl_seconds=app_config.ADMIN_SESSION_TTL_SECONDS,
+            session_secret=app_config.ADMIN_SESSION_SECRET,
         )
     RT.chat_service = chat_service
     RT.event_bus = event_bus
@@ -441,6 +442,7 @@ def _get_admin_store() -> AdminStore:
             default_username=app_config.ADMIN_DEFAULT_USERNAME,
             default_password=app_config.ADMIN_DEFAULT_PASSWORD,
             session_ttl_seconds=app_config.ADMIN_SESSION_TTL_SECONDS,
+            session_secret=app_config.ADMIN_SESSION_SECRET,
         )
     return admin_store
 

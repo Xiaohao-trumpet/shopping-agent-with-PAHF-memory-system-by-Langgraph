@@ -69,15 +69,19 @@ export default function Root() {
     setView(next.role === "merchant" ? "admin" : "store");
   };
 
+  const clearLocalSession = () => {
+    window.localStorage.removeItem(PORTAL_SESSION_KEY);
+    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+    setSession(null);
+    setView("store");
+  };
+
   const handleLogout = async () => {
     const token = session?.adminToken || window.localStorage.getItem(ADMIN_TOKEN_KEY) || "";
     if (token) {
       await logoutAdmin(token).catch(() => undefined);
     }
-    window.localStorage.removeItem(PORTAL_SESSION_KEY);
-    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
-    setSession(null);
-    setView("store");
+    clearLocalSession();
   };
 
   if (!session) {
@@ -122,7 +126,7 @@ export default function Root() {
             initialAgentName={session.agentName ?? session.displayName}
           />
         )}
-        {view === "admin" && <AdminDashboard />}
+        {view === "admin" && <AdminDashboard onAuthExpired={clearLocalSession} />}
         {view === "debug" && <App />}
       </div>
     </div>
@@ -175,7 +179,8 @@ function LoginScreen({ onLogin }: { onLogin: (session: PortalSession) => void })
         adminToken: session.access_token,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "登录失败");
+      const message = err instanceof Error ? err.message : "登录失败";
+      setError(message.includes("401") ? "账号或密码不正确，请重新输入。" : message);
     } finally {
       setLoading(false);
     }
