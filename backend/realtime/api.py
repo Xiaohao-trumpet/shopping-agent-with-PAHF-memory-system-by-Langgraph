@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from .runtime import RT
@@ -108,6 +108,14 @@ def _snapshot_messages(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 @router.get("/api/v1/shop/categories")
@@ -348,16 +356,19 @@ async def agent_conversation_detail(conversation_id: str, _admin: dict = Depends
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/claim")
-async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = Depends(require_admin)):
+async def agent_claim(conversation_id: str, request: Request, _admin: dict = Depends(require_admin)):
+    body = await _json_body(request)
+    conversation_snapshot = body.get("conversation_snapshot") or body.get("conversation")
+    messages_snapshot = body.get("messages_snapshot") or body.get("messages")
     try:
-        agent_id = (req.agent_id or _admin.get("username") or "agent-1").strip()
-        agent_name = (req.agent_name or _admin.get("display_name") or agent_id).strip()
+        agent_id = (body.get("agent_id") or _admin.get("username") or "agent-1").strip()
+        agent_name = (body.get("agent_name") or _admin.get("display_name") or agent_id).strip()
         return await RT.chat_service.claim(
             conversation_id,
             agent_id,
             agent_name,
-            conversation_snapshot=_snapshot_conversation(req.conversation_snapshot),
-            messages_snapshot=_snapshot_messages(req.messages_snapshot),
+            conversation_snapshot=_snapshot_conversation(conversation_snapshot),
+            messages_snapshot=_snapshot_messages(messages_snapshot),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -367,18 +378,21 @@ async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = De
 
 
 @router.post("/api/v1/agent/conversations/{conversation_id}/message")
-async def agent_message(conversation_id: str, req: AgentMessageRequest, _admin: dict = Depends(require_admin)):
+async def agent_message(conversation_id: str, request: Request, _admin: dict = Depends(require_admin)):
+    body = await _json_body(request)
+    conversation_snapshot = body.get("conversation_snapshot") or body.get("conversation")
+    messages_snapshot = body.get("messages_snapshot") or body.get("messages")
     try:
-        agent_id = (req.agent_id or _admin.get("username") or "agent-1").strip()
-        content = (req.content or "").strip()
+        agent_id = (body.get("agent_id") or _admin.get("username") or "agent-1").strip()
+        content = (body.get("content") or "").strip()
         if not content:
             raise HTTPException(status_code=400, detail="message content is empty")
         return await RT.chat_service.agent_send(
             conversation_id,
             agent_id,
             content,
-            conversation_snapshot=_snapshot_conversation(req.conversation_snapshot),
-            messages_snapshot=_snapshot_messages(req.messages_snapshot),
+            conversation_snapshot=_snapshot_conversation(conversation_snapshot),
+            messages_snapshot=_snapshot_messages(messages_snapshot),
         )
     except ValueError as exc:
         detail = str(exc)

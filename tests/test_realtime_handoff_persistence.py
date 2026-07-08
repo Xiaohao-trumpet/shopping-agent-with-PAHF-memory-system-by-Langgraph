@@ -39,6 +39,15 @@ class FakeCatalog:
         }
 
 
+class FakePahf:
+    def __init__(self):
+        self.updates = []
+
+    def apply_memory_update(self, person_id, candidate_summary):
+        self.updates.append((person_id, candidate_summary))
+        return {"updated": True, "action": "added", "memory_id": 1, "text": candidate_summary}
+
+
 @pytest.mark.asyncio
 async def test_handoff_request_survives_store_reopen_and_agent_can_reply(tmp_path):
     db_path = tmp_path / "conversations.db"
@@ -188,3 +197,50 @@ async def test_order_status_uses_fast_path_without_graph_call(tmp_path):
     assert result["trace"]["intent"] == "fast_order_status"
     assert "SO20260012" in result["response"]
     assert graph.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_shoe_preference_writes_memory_without_handoff_or_graph(tmp_path):
+    graph = CountingGraph()
+    pahf = FakePahf()
+    service = ChatService(
+        conversations=ConversationStore(str(tmp_path / "conversations.db")),
+        event_bus=EventBus(),
+        chat_graph=graph,
+        pahf_memory_service=pahf,
+    )
+
+    result = await service.handle_customer_message("c1006", "我喜欢黑色运动鞋，鞋码是 42。")
+
+    assert result["status"] == "bot"
+    assert result["trace"]["intent"] == "explicit_preference_memory"
+    assert "已经记住" in result["response"]
+    assert "黑色" in result["response"]
+    assert "42" in result["response"]
+    assert graph.calls == 0
+    assert pahf.updates == [("c1006", "用户偏好颜色：黑色；偏好品类：运动鞋、鞋；尺码/鞋码：42。")]
+    conversation = service.conversations.get_conversation(result["conversation_id"])
+    assert conversation["status"] == "bot"
+
+
+@pytest.mark.asyncio
+async def test_explicit_preference_recovers_from_stale_queued_state(tmp_path):
+    graph = CountingGraph()
+    pahf = FakePahf()
+    service = ChatService(
+        conversations=ConversationStore(str(tmp_path / "conversations.db")),
+        event_bus=EventBus(),
+        chat_graph=graph,
+        pahf_memory_service=pahf,
+    )
+    queued = await service.handle_customer_message("c1007", "我要转人工")
+    assert queued["status"] == "queued"
+
+    result = await service.handle_customer_message("c1007", "我喜欢黑色运动鞋，鞋码是 42。")
+
+    assert result["status"] == "bot"
+    assert result["trace"]["intent"] == "explicit_preference_memory"
+    assert graph.calls == 0
+    assert pahf.updates
+    conversation = service.conversations.get_conversation(result["conversation_id"])
+    assert conversation["status"] == "bot"

@@ -164,6 +164,74 @@ class ChatService:
         lines.append("如果您要查某一单的详细物流，直接发送订单号即可。")
         return "\n".join(lines)
 
+    def _explicit_preference_summary(self, content: str) -> Optional[str]:
+        text = str(content).strip()
+        compact = re.sub(r"\s+", "", text)
+        if not compact or any(word in compact for word in ("转人工", "人工客服", "真人客服")):
+            return None
+
+        preference_markers = ("喜欢", "偏好", "常穿", "想要", "我穿", "我的尺码", "鞋码", "尺码", "码数")
+        if not any(marker in compact for marker in preference_markers):
+            return None
+
+        colors = ["黑色", "黑白", "白色", "米白", "灰色", "深灰", "蓝色", "绿色", "红色", "棕色"]
+        product_words = ["运动鞋", "跑步鞋", "鞋", "卫衣", "外套", "裤", "包", "耳机", "手机", "护肤"]
+        found_colors = [color for color in colors if color in compact]
+        found_products = [word for word in product_words if word in compact]
+
+        size_match = re.search(r"(?:鞋码|尺码|码数|size)?(?:是|为|:|：)?([0-9]{2}|XS|S|M|L|XL|XXL)码?", compact, re.I)
+        size = size_match.group(1).upper() if size_match else ""
+
+        # Avoid treating generic shopping requests as memory. Require either a
+        # durable preference marker with a product/color, or an explicit size.
+        if not (size or found_colors or ("喜欢" in compact and found_products)):
+            return None
+
+        parts = []
+        if found_colors:
+            parts.append(f"偏好颜色：{'、'.join(dict.fromkeys(found_colors))}")
+        if found_products:
+            parts.append(f"偏好品类：{'、'.join(dict.fromkeys(found_products))}")
+        if size:
+            parts.append(f"尺码/鞋码：{size}")
+        if not parts:
+            return None
+        return "用户" + "；".join(parts) + "。"
+
+    async def _persist_explicit_memory(self, customer_id: str, summary: str) -> Dict[str, Any]:
+        if self.pahf is None:
+            return {"updated": False, "action": "pahf_unavailable"}
+        try:
+            return await asyncio.to_thread(
+                self.pahf.apply_memory_update,
+                person_id=customer_id,
+                candidate_summary=summary,
+            )
+        except Exception as exc:
+            self._log("error", f"explicit memory write failed: {exc}")
+            return {"updated": False, "action": "error", "error": str(exc)}
+
+    async def _handle_explicit_preference(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        preference_summary: str,
+    ) -> Dict[str, Any]:
+        memory_update = await self._persist_explicit_memory(customer_id, preference_summary)
+        response_text = f"好的，我已经记住：{preference_summary}之后给您推荐相关商品时，会优先参考这些偏好。"
+        trace = {
+            "intent": "explicit_preference_memory",
+            "fast_path": True,
+            "memory_candidate": preference_summary,
+            "memory_update": memory_update,
+        }
+        ai_msg = self.conversations.add_message(
+            conversation_id, role="ai", content=response_text, sender="ai", meta={"trace": trace}
+        )
+        await self._emit_conv(conversation_id, {"type": "message", "message": ai_msg})
+        await self._emit_agents({"type": "ai_message", "conversation_id": conversation_id, "message": ai_msg})
+        return {"conversation_id": conversation_id, "status": "bot", "response": response_text, "trace": trace}
+
     # ----------------------------------------------------- customer messaging
     async def handle_customer_message(self, customer_id: str, content: str) -> Dict[str, Any]:
         conv = self.conversations.get_or_create_active(customer_id)
@@ -175,6 +243,7 @@ class ChatService:
         await self._emit_agents({"type": "customer_message", "conversation_id": cid, "message": cust_msg})
 
         status = conv["status"]
+        preference_summary = self._explicit_preference_summary(content)
 
         # Human is handling: don't auto-reply, but give the agent an AI draft (copilot).
         if status == "human":
@@ -183,12 +252,20 @@ class ChatService:
 
         # Already queued: keep waiting; remind once.
         if status == "queued":
+            if preference_summary:
+                self.conversations.release_to_bot(cid)
+                await self._emit_conv(cid, {"type": "status", "status": "bot"})
+                await self._emit_agents(self._queue_snapshot())
+                return await self._handle_explicit_preference(cid, customer_id, preference_summary)
             note = "您的问题正在排队等待人工客服，请稍候～"
             msg = self.conversations.add_message(cid, role="system", content=note, sender="system")
             await self._emit_conv(cid, {"type": "message", "message": msg})
             return {"conversation_id": cid, "status": "queued", "response": note}
 
         # status == bot: pre-check explicit/risk signals before spending an LLM call.
+        if preference_summary:
+            return await self._handle_explicit_preference(cid, customer_id, preference_summary)
+
         pre = evaluate_escalation(content, recent_customer_messages=recent)
         if pre.handoff:
             return await self._escalate(conv, pre, ai_draft=None)
