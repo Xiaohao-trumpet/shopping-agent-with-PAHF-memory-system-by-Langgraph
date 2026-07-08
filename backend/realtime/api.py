@@ -7,7 +7,7 @@ is populated during the app lifespan.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -29,11 +29,15 @@ class ShopChatRequest(BaseModel):
 class ClaimRequest(BaseModel):
     agent_id: str = Field(..., min_length=1)
     agent_name: str = ""
+    conversation_snapshot: Optional[dict[str, Any]] = None
+    messages_snapshot: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentMessageRequest(BaseModel):
     agent_id: str = Field(..., min_length=1)
     content: str = Field(..., min_length=1)
+    conversation_snapshot: Optional[dict[str, Any]] = None
+    messages_snapshot: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentOpRequest(BaseModel):
@@ -336,7 +340,13 @@ async def agent_conversation_detail(conversation_id: str, _admin: dict = Depends
 @router.post("/api/v1/agent/conversations/{conversation_id}/claim")
 async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = Depends(require_admin)):
     try:
-        return await RT.chat_service.claim(conversation_id, req.agent_id, req.agent_name)
+        return await RT.chat_service.claim(
+            conversation_id,
+            req.agent_id,
+            req.agent_name,
+            conversation_snapshot=req.conversation_snapshot,
+            messages_snapshot=req.messages_snapshot,
+        )
     except ValueError as exc:
         detail = str(exc)
         if detail == "conversation_not_found":
@@ -347,7 +357,13 @@ async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = De
 @router.post("/api/v1/agent/conversations/{conversation_id}/message")
 async def agent_message(conversation_id: str, req: AgentMessageRequest, _admin: dict = Depends(require_admin)):
     try:
-        return await RT.chat_service.agent_send(conversation_id, req.agent_id, req.content)
+        return await RT.chat_service.agent_send(
+            conversation_id,
+            req.agent_id,
+            req.content,
+            conversation_snapshot=req.conversation_snapshot,
+            messages_snapshot=req.messages_snapshot,
+        )
     except ValueError as exc:
         detail = str(exc)
         if detail == "conversation_not_found":

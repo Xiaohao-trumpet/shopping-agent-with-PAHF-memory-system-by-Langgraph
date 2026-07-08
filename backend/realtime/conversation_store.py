@@ -197,6 +197,88 @@ class ConversationStore:
     def release_to_bot(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         return self.set_status(conversation_id, "bot", assigned_agent="")
 
+    def restore_snapshot(
+        self,
+        conversation: Dict[str, Any],
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Restore a browser-held conversation snapshot into this store.
+
+        Vercel serverless instances do not share ``/tmp`` SQLite files. The
+        agent console may fetch a queued chat from one instance, then send the
+        claim to another fresh instance. This method lets privileged agent
+        actions rehydrate that known conversation before applying the action.
+        """
+        conversation_id = str(conversation.get("conversation_id") or "").strip()
+        customer_id = str(conversation.get("customer_id") or "").strip()
+        if not conversation_id or not customer_id:
+            return None
+
+        status = str(conversation.get("status") or "queued")
+        if status not in STATUSES:
+            status = "queued"
+        now = time.time()
+
+        def _float_value(key: str, default: float) -> float:
+            try:
+                return float(conversation.get(key) or default)
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            priority = int(conversation.get("priority") or 2)
+        except (TypeError, ValueError):
+            priority = 2
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO conversations(
+                   conversation_id, customer_id, channel, status, assigned_agent,
+                   priority, escalation_reason, csat, created_at, updated_at, last_message_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    conversation_id,
+                    customer_id,
+                    str(conversation.get("channel") or "web"),
+                    status,
+                    conversation.get("assigned_agent") or None,
+                    priority,
+                    conversation.get("escalation_reason"),
+                    conversation.get("csat"),
+                    _float_value("created_at", now),
+                    _float_value("updated_at", now),
+                    _float_value("last_message_at", now),
+                ),
+            )
+            existing_messages = conn.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if int(existing_messages["c"]) == 0:
+                for item in messages or []:
+                    role = str(item.get("role") or "")
+                    content = str(item.get("content") or "")
+                    if role not in {"customer", "ai", "agent", "system"} or not content:
+                        continue
+                    try:
+                        created_at = float(item.get("created_at") or now)
+                    except (TypeError, ValueError):
+                        created_at = now
+                    conn.execute(
+                        """INSERT INTO messages(conversation_id, role, sender, content, meta_json, created_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (
+                            conversation_id,
+                            role,
+                            str(item.get("sender") or role),
+                            content,
+                            json.dumps(item.get("meta") or {}, ensure_ascii=False),
+                            created_at,
+                        ),
+                    )
+            conn.commit()
+        return self.get_conversation(conversation_id)
+
     def set_csat(self, conversation_id: str, csat: int) -> Optional[Dict[str, Any]]:
         """Record the overall satisfaction score without changing status."""
         with self._connect() as conn:

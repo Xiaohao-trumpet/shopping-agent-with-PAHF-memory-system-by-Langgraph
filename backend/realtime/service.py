@@ -239,9 +239,30 @@ class ChatService:
                 self._log("error", f"offline webhook failed: {exc}")
 
     # --------------------------------------------------------- agent actions
-    async def claim(self, conversation_id: str, agent_id: str, agent_name: str = "") -> Dict[str, Any]:
+    def _restore_if_missing(
+        self,
+        conversation_id: str,
+        conversation_snapshot: Optional[Dict[str, Any]] = None,
+        messages_snapshot: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not conversation_snapshot:
+            return None
+        if conversation_snapshot.get("conversation_id") != conversation_id:
+            return None
+        return self.conversations.restore_snapshot(conversation_snapshot, messages_snapshot or [])
+
+    async def claim(
+        self,
+        conversation_id: str,
+        agent_id: str,
+        agent_name: str = "",
+        conversation_snapshot: Optional[Dict[str, Any]] = None,
+        messages_snapshot: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         self.register_agent(agent_id, agent_name)
         existing = self.conversations.get_conversation(conversation_id)
+        if existing is None:
+            existing = self._restore_if_missing(conversation_id, conversation_snapshot, messages_snapshot)
         if existing is None:
             raise ValueError("conversation_not_found")
         if existing["status"] == "human":
@@ -267,8 +288,17 @@ class ChatService:
         await self._emit_agents(self._queue_snapshot())
         return conv
 
-    async def agent_send(self, conversation_id: str, agent_id: str, content: str) -> Dict[str, Any]:
+    async def agent_send(
+        self,
+        conversation_id: str,
+        agent_id: str,
+        content: str,
+        conversation_snapshot: Optional[Dict[str, Any]] = None,
+        messages_snapshot: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         conv = self.conversations.get_conversation(conversation_id)
+        if conv is None:
+            conv = self._restore_if_missing(conversation_id, conversation_snapshot, messages_snapshot)
         if conv is None:
             raise ValueError("conversation_not_found")
         if conv["status"] != "human":

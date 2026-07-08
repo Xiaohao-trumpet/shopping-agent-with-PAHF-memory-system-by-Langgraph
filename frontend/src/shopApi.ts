@@ -35,6 +35,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+export interface ConversationSnapshot {
+  conversation?: Conversation;
+  messages?: ConvMessage[];
+}
+
+function snapshotPayload(snapshot?: ConversationSnapshot): {
+  conversation_snapshot?: Conversation;
+  messages_snapshot?: ConvMessage[];
+} {
+  return snapshot?.conversation
+    ? {
+        conversation_snapshot: snapshot.conversation,
+        messages_snapshot: snapshot.messages ?? [],
+      }
+    : {};
+}
+
 // ---------------------------------------------------------------- storefront
 export async function fetchCategories(): Promise<string[]> {
   const res = await request<{ categories: string[] }>("/api/v1/shop/categories");
@@ -218,12 +235,13 @@ export async function claimConversation(
   token: string,
   conversationId: string,
   agentId: string,
-  agentName: string
+  agentName: string,
+  snapshot?: ConversationSnapshot
 ): Promise<Conversation> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/claim`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ agent_id: agentId, agent_name: agentName }),
+    body: JSON.stringify({ agent_id: agentId, agent_name: agentName, ...snapshotPayload(snapshot) }),
   });
 }
 
@@ -231,12 +249,13 @@ export async function sendAgentMessage(
   token: string,
   conversationId: string,
   agentId: string,
-  content: string
+  content: string,
+  snapshot?: ConversationSnapshot
 ): Promise<ConvMessage> {
   return request(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/message`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ agent_id: agentId, content }),
+    body: JSON.stringify({ agent_id: agentId, content, ...snapshotPayload(snapshot) }),
   });
 }
 

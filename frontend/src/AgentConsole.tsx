@@ -71,7 +71,8 @@ function actionErrorMessage(error: unknown): string {
   if (text.includes("conversation_not_claimable")) return "该会话状态已变化，暂时不能认领。";
   if (text.includes("conversation_not_found")) return "会话不存在或已结束，请重新选择。";
   if (text.includes("401") || text.includes("403")) return "登录状态已失效，请重新登录管理后台。";
-  return "操作失败，请稍后重试。";
+  if (text.includes("422")) return "请求参数不完整，请刷新页面后重试。";
+  return `操作失败，请稍后重试。${text ? `（${text.slice(0, 120)}）` : ""}`;
 }
 
 interface AgentConsoleProps {
@@ -215,7 +216,10 @@ export default function AgentConsole({
     setClaimingId(targetId);
     setActionError("");
     try {
-      const claimed = await claimConversation(adminToken, targetId, trimmedAgentId, trimmedAgentName);
+      const claimed = await claimConversation(adminToken, targetId, trimmedAgentId, trimmedAgentName, {
+        conversation: context?.conversation,
+        messages: context?.messages,
+      });
       setContext((current) =>
         current && current.conversation.conversation_id === targetId
           ? { ...current, conversation: claimed }
@@ -239,7 +243,10 @@ export default function AgentConsole({
   const doSend = async () => {
     const text = draft.trim();
     if (!text || !selectedId) return;
-    await sendAgentMessage(adminToken, selectedId, agentId, text);
+    await sendAgentMessage(adminToken, selectedId, agentId, text, {
+      conversation: context?.conversation,
+      messages: context?.messages,
+    });
     setDraft("");
     refreshContext(selectedId);
   };
