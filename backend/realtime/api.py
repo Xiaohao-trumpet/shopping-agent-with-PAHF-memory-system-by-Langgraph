@@ -27,17 +27,17 @@ class ShopChatRequest(BaseModel):
 
 
 class ClaimRequest(BaseModel):
-    agent_id: str = Field(..., min_length=1)
-    agent_name: str = ""
-    conversation_snapshot: Optional[dict[str, Any]] = None
-    messages_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    agent_id: Optional[str] = None
+    agent_name: Optional[str] = ""
+    conversation_snapshot: Any = None
+    messages_snapshot: Any = None
 
 
 class AgentMessageRequest(BaseModel):
-    agent_id: str = Field(..., min_length=1)
-    content: str = Field(..., min_length=1)
-    conversation_snapshot: Optional[dict[str, Any]] = None
-    messages_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    agent_id: Optional[str] = None
+    content: Optional[str] = None
+    conversation_snapshot: Any = None
+    messages_snapshot: Any = None
 
 
 class AgentOpRequest(BaseModel):
@@ -100,6 +100,16 @@ class ProductReviewRequest(BaseModel):
 
 
 # ------------------------------------------------------------ shop browsing
+def _snapshot_conversation(value: Any) -> Optional[dict[str, Any]]:
+    return value if isinstance(value, dict) else None
+
+
+def _snapshot_messages(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 @router.get("/api/v1/shop/categories")
 async def shop_categories():
     return {"categories": RT.catalog_store.list_categories()}
@@ -340,12 +350,14 @@ async def agent_conversation_detail(conversation_id: str, _admin: dict = Depends
 @router.post("/api/v1/agent/conversations/{conversation_id}/claim")
 async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = Depends(require_admin)):
     try:
+        agent_id = (req.agent_id or _admin.get("username") or "agent-1").strip()
+        agent_name = (req.agent_name or _admin.get("display_name") or agent_id).strip()
         return await RT.chat_service.claim(
             conversation_id,
-            req.agent_id,
-            req.agent_name,
-            conversation_snapshot=req.conversation_snapshot,
-            messages_snapshot=req.messages_snapshot,
+            agent_id,
+            agent_name,
+            conversation_snapshot=_snapshot_conversation(req.conversation_snapshot),
+            messages_snapshot=_snapshot_messages(req.messages_snapshot),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -357,12 +369,16 @@ async def agent_claim(conversation_id: str, req: ClaimRequest, _admin: dict = De
 @router.post("/api/v1/agent/conversations/{conversation_id}/message")
 async def agent_message(conversation_id: str, req: AgentMessageRequest, _admin: dict = Depends(require_admin)):
     try:
+        agent_id = (req.agent_id or _admin.get("username") or "agent-1").strip()
+        content = (req.content or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="message content is empty")
         return await RT.chat_service.agent_send(
             conversation_id,
-            req.agent_id,
-            req.content,
-            conversation_snapshot=req.conversation_snapshot,
-            messages_snapshot=req.messages_snapshot,
+            agent_id,
+            content,
+            conversation_snapshot=_snapshot_conversation(req.conversation_snapshot),
+            messages_snapshot=_snapshot_messages(req.messages_snapshot),
         )
     except ValueError as exc:
         detail = str(exc)

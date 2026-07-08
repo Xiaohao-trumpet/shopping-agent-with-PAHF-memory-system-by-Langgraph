@@ -44,12 +44,38 @@ function snapshotPayload(snapshot?: ConversationSnapshot): {
   conversation_snapshot?: Conversation;
   messages_snapshot?: ConvMessage[];
 } {
-  return snapshot?.conversation
-    ? {
-        conversation_snapshot: snapshot.conversation,
-        messages_snapshot: snapshot.messages ?? [],
-      }
-    : {};
+  const conversation = snapshot?.conversation;
+  if (!conversation?.conversation_id || !conversation.customer_id) return {};
+  const now = Date.now() / 1000;
+  return {
+    conversation_snapshot: {
+      conversation_id: conversation.conversation_id,
+      customer_id: conversation.customer_id,
+      channel: conversation.channel || "web",
+      status: conversation.status || "queued",
+      assigned_agent: conversation.assigned_agent ?? null,
+      priority: Number(conversation.priority) || 2,
+      escalation_reason: conversation.escalation_reason ?? null,
+      csat: conversation.csat ?? null,
+      created_at: Number(conversation.created_at) || now,
+      updated_at: Number(conversation.updated_at) || now,
+      last_message_at: Number(conversation.last_message_at) || now,
+    },
+    messages_snapshot: Array.isArray(snapshot?.messages)
+      ? snapshot.messages
+          .filter((message) => message && message.conversation_id === conversation.conversation_id)
+          .slice(-80)
+          .map((message) => ({
+            id: Number(message.id) || 0,
+            conversation_id: message.conversation_id,
+            role: message.role,
+            sender: message.sender || message.role,
+            content: String(message.content || ""),
+            meta: message.meta && typeof message.meta === "object" ? message.meta : {},
+            created_at: Number(message.created_at) || now,
+          }))
+      : [],
+  };
 }
 
 // ---------------------------------------------------------------- storefront
