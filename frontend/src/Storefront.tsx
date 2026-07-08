@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent } from "react";
+import type { MouseEvent, PointerEvent } from "react";
 import type {
   Product,
   ConvMessage,
@@ -454,6 +454,41 @@ function RatingModal({ customerId, conversationId, onClose }: {
 }
 
 // -------------------------------------------------------------- chat widget
+const CHAT_SIZE_KEY = "servicebot_chat_widget_size_v1";
+const DEFAULT_CHAT_SIZE = { width: 420, height: 620 };
+const MIN_CHAT_SIZE = { width: 340, height: 460 };
+
+function clampChatSize(size: { width: number; height: number }) {
+  if (typeof window === "undefined") {
+    return {
+      width: Math.max(MIN_CHAT_SIZE.width, size.width),
+      height: Math.max(MIN_CHAT_SIZE.height, size.height),
+    };
+  }
+  const maxWidth = Math.max(MIN_CHAT_SIZE.width, window.innerWidth - 32);
+  const maxHeight = Math.max(MIN_CHAT_SIZE.height, window.innerHeight - 120);
+  return {
+    width: Math.min(Math.max(size.width, MIN_CHAT_SIZE.width), maxWidth),
+    height: Math.min(Math.max(size.height, MIN_CHAT_SIZE.height), maxHeight),
+  };
+}
+
+function readChatSize() {
+  if (typeof window === "undefined") return DEFAULT_CHAT_SIZE;
+  const raw = window.localStorage.getItem(CHAT_SIZE_KEY);
+  if (!raw) return clampChatSize(DEFAULT_CHAT_SIZE);
+  try {
+    const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_CHAT_SIZE>;
+    return clampChatSize({
+      width: Number(parsed.width) || DEFAULT_CHAT_SIZE.width,
+      height: Number(parsed.height) || DEFAULT_CHAT_SIZE.height,
+    });
+  } catch {
+    window.localStorage.removeItem(CHAT_SIZE_KEY);
+    return clampChatSize(DEFAULT_CHAT_SIZE);
+  }
+}
+
 function ChatWidget({ customerId, prefill, onConsumePrefill }: {
   customerId: string;
   prefill: string;
@@ -466,6 +501,13 @@ function ChatWidget({ customerId, prefill, onConsumePrefill }: {
   const [rated, setRated] = useState<Record<number, "up" | "down">>({});
   const [showRating, setShowRating] = useState(false);
   const ratedConvRef = useRef<string>("");
+  const [chatSize, setChatSize] = useState(readChatSize);
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+  } | null>(null);
 
   useEffect(() => {
     if (prefill && !open) setOpen(true);
@@ -478,6 +520,16 @@ function ChatWidget({ customerId, prefill, onConsumePrefill }: {
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [messages, open]);
+
+  useEffect(() => {
+    window.localStorage.setItem(CHAT_SIZE_KEY, JSON.stringify(chatSize));
+  }, [chatSize]);
+
+  useEffect(() => {
+    const handleResize = () => setChatSize((current) => clampChatSize(current));
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // When the conversation is resolved, prompt for an overall rating once.
   useEffect(() => {
@@ -509,6 +561,32 @@ function ChatWidget({ customerId, prefill, onConsumePrefill }: {
     }
   };
 
+  const beginResize = (event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: chatSize.width,
+      startHeight: chatSize.height,
+    };
+  };
+
+  const moveResize = (event: PointerEvent<HTMLButtonElement>) => {
+    if (!resizeRef.current) return;
+    const next = {
+      width: resizeRef.current.startWidth + resizeRef.current.startX - event.clientX,
+      height: resizeRef.current.startHeight + resizeRef.current.startY - event.clientY,
+    };
+    setChatSize(clampChatSize(next));
+  };
+
+  const endResize = (event: PointerEvent<HTMLButtonElement>) => {
+    if (!resizeRef.current) return;
+    resizeRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
   const statusMeta =
     status === "queued"
       ? { title: "已转人工", desc: "问题已进入人工队列，坐席接入后会继续回复" }
@@ -523,7 +601,19 @@ function ChatWidget({ customerId, prefill, onConsumePrefill }: {
   return (
     <div className="chat-widget">
       {open && (
-        <div className="chat-panel">
+        <div className="chat-panel" style={{ width: chatSize.width, height: chatSize.height }}>
+          <button
+            type="button"
+            className="chat-resize-handle"
+            title="拖拽调整窗口大小"
+            aria-label="拖拽调整窗口大小"
+            onPointerDown={beginResize}
+            onPointerMove={moveResize}
+            onPointerUp={endResize}
+            onPointerCancel={endResize}
+          >
+            <span aria-hidden="true">↖</span>
+          </button>
           <div className="chat-panel-head">
             <span>云市集客服</span>
             <div className="chat-head-actions">
